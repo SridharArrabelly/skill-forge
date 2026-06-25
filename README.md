@@ -1,2 +1,101 @@
 # skill-forge
-Single chat agent with N swappable MCP skills (kratos-style). Skills: web grounding (WorkIQ) + Azure AI Search knowledge.
+
+A minimal, local-first chat app that demonstrates the **kratos-agent** pattern:
+
+> **One agent. One agentic loop. N swappable skills.**
+> The single loop's LLM reasoning does all the routing — it decides which skill to use
+> each turn. New capabilities are added as **skill folders**, never as new agents.
+
+This is a deliberately small, readable implementation meant for learning the pattern —
+no avatar, no heavy Azure infra. It borrows the *concept* from kratos-agent (not its code):
+just a FastAPI backend, a hand-rolled Reason → Act → Observe loop over Azure OpenAI, and a
+one-file chat UI — all our own implementation.
+
+## The core idea
+
+A **skill is just a folder** under `skills/` containing a `SKILL.md` file:
+
+```markdown
+---
+name: web-grounding
+description: Answer questions needing live/current web info via WorkIQ web grounding.
+enabled: true
+---
+
+## Instructions
+Procedural knowledge the agent loads on demand…
+```
+
+- The **`description`** is the routing signal — it's what the agent uses to decide when
+  to invoke the skill.
+- A skill is **code-backed** if its folder also contains a `tool.py` (a real callable
+  function the agent can run, e.g. `rag_search`). Otherwise it's **instructions-only**
+  (pure Markdown procedural knowledge served on demand).
+- Add or remove a capability by adding/removing a folder — no code changes to the loop.
+
+## How it relates to kratos-agent
+
+We took the *concept* from kratos and implemented it from scratch our own way. Conceptual
+parallels (not shared code):
+
+| kratos-agent concept | how skill-forge does it |
+|--------------|-------------|
+| One agent, one agentic loop owns routing | hand-rolled loop in `agent.py` (every step visible) |
+| Skill = folder with `SKILL.md` frontmatter | `skill_registry.py` discovers + parses folders |
+| Code-backed skill is a callable tool | each skill folder ships its own `tool.py` |
+| "Always prefer a skill over guessing" | same system-prompt guidance |
+| Blob / APM sources, MCP, tracing, evals | out of scope here |
+
+## Architecture
+
+```
+User ─▶ web/index.html ──SSE──▶ /api/chat ─▶ agent.py (loop)
+                                                │
+                       ┌────────────────────────┼───────────────────────┐
+                       ▼                        ▼                        ▼
+               Reason (Azure OpenAI)      Act (run a skill tool)   Observe (feed result back)
+                       ▲                                                 │
+                       └─────────────────── iterate ─────────────────────┘
+
+skills/web-grounding/SKILL.md + tool.py   (code-backed, WorkIQ — stubbed)
+skills/rag-search/SKILL.md   + tool.py     (code-backed, Azure AI Search — stubbed)
+```
+
+## Project layout
+
+```
+backend/app/
+  config.py          # env settings (Azure OpenAI + skill dirs)
+  models.py          # SSE event + request models
+  skill_registry.py  # discover skills/*/SKILL.md, parse frontmatter
+  skill_tools.py     # load code-backed tool.py, build OpenAI tool schemas
+  agent.py           # the single Reason → Act → Observe loop
+  main.py            # FastAPI: /api/chat (SSE), /api/skills, serves the UI
+skills/              # one folder per skill (SKILL.md [+ tool.py])
+web/index.html       # minimal chat UI with skill-invocation chips
+```
+
+## Run it locally
+
+1. Create and fill an env file:
+   ```powershell
+   Copy-Item .env.example .env
+   # edit .env with your Azure OpenAI endpoint / key / deployment
+   ```
+2. Install deps:
+   ```powershell
+   python -m venv .venv; .\.venv\Scripts\Activate.ps1
+   pip install -r backend/requirements.txt
+   ```
+3. Start the backend (serves the UI too):
+   ```powershell
+   uvicorn app.main:app --app-dir backend --reload
+   ```
+4. Open http://localhost:8000 and chat. Watch the skill-invocation chips to see which
+   skill the single loop decided to use.
+
+## Status
+
+The two starter skills (`web-grounding`, `rag-search`) are **scaffolded with stubs** that
+return clearly-marked placeholder data. Wiring the real WorkIQ web grounding and Azure AI
+Search index is a later step.

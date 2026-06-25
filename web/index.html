@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>skill-forge</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --border: #262b38; --text: #e6e8ee;
+    --muted: #8b93a7; --accent: #6ea8fe; --chip: #1e2638; --user: #223; --tool: #1b2a1f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 12px; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .tag { color: var(--muted); font-size: 13px; }
+  .layout { display: grid; grid-template-columns: 260px 1fr; height: calc(100vh - 51px); }
+  aside { border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .skill { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+  .skill .name { font-weight: 600; }
+  .skill .kind { font-size: 11px; color: var(--accent); }
+  .skill .desc { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .warn { background: #3a2417; border: 1px solid #6b4423; color: #ffcd9a; padding: 10px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
+  main { display: flex; flex-direction: column; min-width: 0; }
+  #log { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 760px; }
+  .msg.user { align-self: flex-end; background: var(--user); border: 1px solid var(--border); border-radius: 12px 12px 2px 12px; padding: 10px 14px; }
+  .msg.assistant { align-self: flex-start; white-space: pre-wrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+  .chip { font-size: 12px; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; color: var(--accent); }
+  .chip.done { color: #7ee0a0; border-color: #2c5; }
+  details.tool { background: var(--tool); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12px; max-width: 760px; }
+  details.tool pre { white-space: pre-wrap; word-break: break-word; color: var(--muted); margin: 6px 0 0; }
+  form { display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); }
+  #input { flex: 1; resize: none; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font: inherit; }
+  button { background: var(--accent); color: #04122e; border: 0; border-radius: 10px; padding: 0 18px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <h1>skill-forge</h1>
+  <span class="tag">one agent · one loop · N swappable skills</span>
+</header>
+<div class="layout">
+  <aside>
+    <div id="warn"></div>
+    <h2>Skills</h2>
+    <div id="skills"></div>
+  </aside>
+  <main>
+    <div id="log"></div>
+    <form id="form">
+      <textarea id="input" rows="2" placeholder="Ask something… (the agent picks which skill to use)"></textarea>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+</div>
+
+<script>
+const log = document.getElementById('log');
+const form = document.getElementById('form');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const history = [];
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+async function loadSkills() {
+  try {
+    const res = await fetch('/api/skills');
+    const data = await res.json();
+    const box = document.getElementById('skills');
+    box.innerHTML = '';
+    for (const s of data.skills) {
+      const card = el('div', 'skill');
+      card.appendChild(el('div', 'name', s.name + (s.enabled ? '' : ' (disabled)')));
+      card.appendChild(el('div', 'kind', s.kind));
+      card.appendChild(el('div', 'desc', s.description));
+      box.appendChild(card);
+    }
+    if (!data.azure_configured) {
+      document.getElementById('warn').innerHTML =
+        '<div class="warn">Azure OpenAI not configured. Copy <code>.env.example</code> to <code>.env</code> and fill in your endpoint, key, and deployment.</div>';
+    }
+  } catch (e) { /* backend not ready */ }
+}
+
+function addUser(text) {
+  const m = el('div', 'msg user', text);
+  log.appendChild(m);
+  log.scrollTop = log.scrollHeight;
+}
+
+function newAssistantTurn() {
+  const wrap = el('div', 'msg assistant');
+  const chips = el('div', 'chips');
+  const body = el('div');
+  wrap.appendChild(chips);
+  wrap.appendChild(body);
+  log.appendChild(wrap);
+  return { chips, body, chipFor: {} };
+}
+
+function handleEvent(ev, turn) {
+  if (ev.type === 'content') {
+    turn.body.textContent += ev.text;
+  } else if (ev.type === 'tool_call') {
+    if (ev.status === 'start') {
+      const chip = el('span', 'chip', '⚙ ' + ev.skill);
+      turn.chips.appendChild(chip);
+      turn.chipFor[ev.skill] = chip;
+      const det = el('details', 'tool');
+      det.appendChild(el('summary', null, 'tool · ' + ev.skill));
+      det.appendChild(el('pre', null, 'args: ' + JSON.stringify(ev.arguments, null, 2)));
+      turn._lastDetails = det;
+      turn.body.parentElement.insertBefore(det, turn.body);
+    } else if (ev.status === 'result') {
+      const chip = turn.chipFor[ev.skill];
+      if (chip) { chip.classList.add('done'); chip.textContent = '✓ ' + ev.skill; }
+      if (turn._lastDetails) {
+        turn._lastDetails.appendChild(
+          el('pre', null, 'result: ' + JSON.stringify(ev.result, null, 2)));
+      }
+    }
+  } else if (ev.type === 'error') {
+    turn.body.appendChild(el('div', 'warn', ev.message));
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+async function send(message) {
+  addUser(message);
+  const turn = newAssistantTurn();
+  sendBtn.disabled = true;
+
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, history }),
+  });
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split('\n\n');
+    buf = parts.pop();
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data:')) continue;
+      const ev = JSON.parse(line.slice(5).trim());
+      if (ev.type === 'done') continue;
+      handleEvent(ev, turn);
+    }
+  }
+
+  history.push({ role: 'user', content: message });
+  history.push({ role: 'assistant', content: turn.body.textContent });
+  sendBtn.disabled = false;
+  input.focus();
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  send(text);
+});
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+});
+
+loadSkills();
+</script>
+</body>
+</html>
