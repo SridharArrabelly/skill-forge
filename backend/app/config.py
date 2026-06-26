@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     )
 
     # ── Azure OpenAI (the brain behind the loop) ────────────────────────────
+    # Auth is keyless by default: leave the API key blank and we use
+    # DefaultAzureCredential (az login / managed identity). Set a key only if
+    # you explicitly want key-based auth.
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
     azure_openai_deployment: str = ""
@@ -49,13 +52,18 @@ class Settings(BaseSettings):
         return p if p.is_absolute() else (REPO_ROOT / p)
 
     @property
+    def use_entra_auth(self) -> bool:
+        """True when we should authenticate keylessly via DefaultAzureCredential."""
+        return not self.azure_openai_api_key
+
+    @property
     def azure_configured(self) -> bool:
-        """True when enough Azure OpenAI settings exist to make a call."""
-        return bool(
-            self.azure_openai_endpoint
-            and self.azure_openai_api_key
-            and self.azure_openai_deployment
-        )
+        """True when enough Azure OpenAI settings exist to make a call.
+
+        Only the endpoint and deployment are required — auth defaults to keyless
+        (DefaultAzureCredential), so the API key is optional.
+        """
+        return bool(self.azure_openai_endpoint and self.azure_openai_deployment)
 
 
 @lru_cache

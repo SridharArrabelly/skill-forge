@@ -54,11 +54,25 @@ class Agent:
     @property
     def client(self) -> AzureOpenAI:
         if self._client is None:
-            self._client = AzureOpenAI(
-                azure_endpoint=self.settings.azure_openai_endpoint,
-                api_key=self.settings.azure_openai_api_key,
-                api_version=self.settings.azure_openai_api_version,
-            )
+            if self.settings.use_entra_auth:
+                # Keyless: DefaultAzureCredential (az login / managed identity).
+                from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+                token_provider = get_bearer_token_provider(
+                    DefaultAzureCredential(),
+                    "https://cognitiveservices.azure.com/.default",
+                )
+                self._client = AzureOpenAI(
+                    azure_endpoint=self.settings.azure_openai_endpoint,
+                    azure_ad_token_provider=token_provider,
+                    api_version=self.settings.azure_openai_api_version,
+                )
+            else:
+                self._client = AzureOpenAI(
+                    azure_endpoint=self.settings.azure_openai_endpoint,
+                    api_key=self.settings.azure_openai_api_key,
+                    api_version=self.settings.azure_openai_api_version,
+                )
         return self._client
 
     def system_prompt(self) -> str:
@@ -70,8 +84,9 @@ class Agent:
         """Run one user turn, yielding SSE event dicts until done."""
         if not self.settings.azure_configured:
             yield ErrorEvent(
-                message="Azure OpenAI is not configured. Copy .env.example to .env "
-                "and set AZURE_OPENAI_ENDPOINT / _API_KEY / _DEPLOYMENT."
+                message="Azure OpenAI is not configured. Set AZURE_OPENAI_ENDPOINT and "
+                "AZURE_OPENAI_DEPLOYMENT in .env (auth is keyless via DefaultAzureCredential — "
+                "run `az login`)."
             ).model_dump()
             yield DoneEvent().model_dump()
             return
