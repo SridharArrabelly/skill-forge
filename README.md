@@ -12,6 +12,10 @@ no avatar, no heavy Azure infra. The design was inspired by ideas in the
 it's our own implementation from scratch: just a FastAPI backend, a hand-rolled
 Reason → Act → Observe loop over Azure OpenAI, and a one-file chat UI.
 
+> **New here?** Read **[docs/THE-PATTERN.md](docs/THE-PATTERN.md)** for a guided
+> explanation of how this differs from a plain function-calling agent, what
+> *progressive disclosure* is, and when the approach pays off.
+
 ## The core idea
 
 A **skill is just a folder** under `skills/` containing a `SKILL.md` file:
@@ -59,8 +63,8 @@ User ─▶ web/index.html ──SSE──▶ /api/chat ─▶ agent.py (loop)
                        ▲                                                 │
                        └─────────────────── iterate ─────────────────────┘
 
-skills/web-grounding/SKILL.md + tool.py   (code-backed, WorkIQ — stubbed)
-skills/rag-search/SKILL.md   + tool.py     (code-backed, Azure AI Search — stubbed)
+skills/web-grounding/SKILL.md + tool.py   (code-backed, WebIQ web grounding)
+skills/rag-search/SKILL.md   + tool.py     (code-backed, Azure AI Search)
 ```
 
 ## Project layout
@@ -110,6 +114,11 @@ uv run --extra dev pytest        # or: .\.venv\Scripts\python.exe -m pytest back
 
 ## Status
 
-The two starter skills (`web-grounding`, `rag-search`) are **scaffolded with stubs** that
-return clearly-marked placeholder data. Wiring the real WorkIQ web grounding and Azure AI
-Search index is a later step.
+Both starter skills are **wired to real backends**:
+
+- **`web-grounding`** → Microsoft WebIQ via the official `webiq` SDK (live web results
+  with citations).
+- **`rag-search`** → semantic retrieval over an existing Azure AI Search index.
+
+Auth is keyless-first (`DefaultAzureCredential` / `az login`); set the matching API key
+in `.env` only if you prefer key-based auth. See `.env.example` for all variables.
