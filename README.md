@@ -1,15 +1,16 @@
 # skill-forge
 
-A minimal, local-first chat app that demonstrates the **kratos-agent** pattern:
+A minimal, local-first chat app that demonstrates a simple **agentic-loop + swappable-skills** pattern:
 
 > **One agent. One agentic loop. N swappable skills.**
 > The single loop's LLM reasoning does all the routing — it decides which skill to use
 > each turn. New capabilities are added as **skill folders**, never as new agents.
 
 This is a deliberately small, readable implementation meant for learning the pattern —
-no avatar, no heavy Azure infra. It borrows the *concept* from kratos-agent (not its code):
-just a FastAPI backend, a hand-rolled Reason → Act → Observe loop over Azure OpenAI, and a
-one-file chat UI — all our own implementation.
+no avatar, no heavy Azure infra. The design was inspired by ideas in the
+[`aiappsgbb/kratos-agent`](https://github.com/aiappsgbb/kratos-agent) reference repo, but
+it's our own implementation from scratch: just a FastAPI backend, a hand-rolled
+Reason → Act → Observe loop over Azure OpenAI, and a one-file chat UI.
 
 ## The core idea
 
@@ -33,12 +34,13 @@ Procedural knowledge the agent loads on demand…
   (pure Markdown procedural knowledge served on demand).
 - Add or remove a capability by adding/removing a folder — no code changes to the loop.
 
-## How it relates to kratos-agent
+## Inspiration
 
-We took the *concept* from kratos and implemented it from scratch our own way. Conceptual
-parallels (not shared code):
+The agentic-loop + skills-as-folders idea was inspired by the `aiappsgbb/kratos-agent`
+reference repo. skill-forge is a fresh, from-scratch implementation — no shared code.
+Conceptual parallels:
 
-| kratos-agent concept | how skill-forge does it |
+| Concept (seen in kratos-agent) | how skill-forge does it |
 |--------------|-------------|
 | One agent, one agentic loop owns routing | hand-rolled loop in `agent.py` (every step visible) |
 | Skill = folder with `SKILL.md` frontmatter | `skill_registry.py` discovers + parses folders |
