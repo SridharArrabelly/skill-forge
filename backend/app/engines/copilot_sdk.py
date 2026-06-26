@@ -142,15 +142,30 @@ class CopilotSdkEngine(AgentEngine):
             )
         return tools
 
+    def _tool_allowlist(self):
+        """Restrict the session to ONLY our skill tools.
+
+        The Copilot runtime is a full coding agent: by default the model sees a
+        *merged* catalog of our custom tools plus the runtime's own built-ins
+        (view/edit/shell/web/glob/grep, etc.). `available_tools` is an allowlist
+        over that whole catalog, so pinning it to our custom tools makes this
+        engine behave like Stage 1 — only our skills exist — which keeps the
+        cross-engine comparison honest and tool selection predictable.
+        """
+        from copilot import ToolSet
+
+        allow = ToolSet()
+        for spec in self.toolset.openai_tools():
+            allow.add_custom(spec["function"]["name"])
+        return allow
+
     def _system_addendum(self) -> str:
         return (
             "You are skill-forge's agent. You have these skills available as tools:\n"
             f"{self.toolset.skill_catalogue()}\n\n"
-            "Strongly prefer these skills over any built-in tools when the user's "
-            "question matches one of them. Call `load_skill_instructions(name)` to "
-            "read a skill's full procedure before using it. Answer using the skill "
-            "results and keep any source citations the skill returns. Do not edit "
-            "files or run shell commands."
+            "Call `load_skill_instructions(name)` to read a skill's full procedure "
+            "before using it, then call the matching skill. Answer using the skill "
+            "results and keep any source citations the skill returns."
         )
 
     @staticmethod
@@ -190,6 +205,7 @@ class CopilotSdkEngine(AgentEngine):
                 model=self._model,
                 on_permission_request=PermissionHandler.approve_all,
                 tools=tools,
+                available_tools=self._tool_allowlist(),
                 streaming=True,
                 system_message={"mode": "append", "content": self._system_addendum()},
             )

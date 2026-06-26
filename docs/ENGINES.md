@@ -70,12 +70,16 @@ The headline differences from Stage 1:
 called `load_skill_instructions("rag-search")` and *then* `rag_search` — exactly
 the Stage-1 pattern, with no special prompting.
 
-**Caveat noticed:** the runtime ships its **own** built-in tools (file, shell,
-web). We point its working directory at a throwaway scratch dir and add a system
-message telling it to prefer our skills and not touch files — but tool selection
-is inherently **less predictable** than the hand-rolled loop, because we no
-longer own the tool list end-to-end. That trade (control vs. managed
-convenience) is the whole point of the comparison.
+**Built-in tools — and how we pin them out.** The Copilot runtime is a full
+coding agent, so *by default* the model sees a **merged catalog**: our custom
+skills **plus** the runtime's own built-ins (`view`/`read_file`, `edit`/`create`,
+`shell`, web search, glob/grep, and an isolated set like `ask_user`, `task`,
+`skill`). To keep the comparison honest — and match Stage 1's "only our tools
+exist" — this engine passes `available_tools` as an **allowlist** of just our
+three custom tools (`rag_search`, `web_grounding`, `load_skill_instructions`).
+The runtime hides everything else from the model. Verified: with the allowlist
+on, a knowledge-base question used *only* `load_skill_instructions` → `rag_search`
+and no built-in tools at all.
 
 ---
 
@@ -89,7 +93,7 @@ convenience) is the whole point of the comparison.
 | Auth                   | `DefaultAzureCredential` (keyless)| Logged-in Copilot user (no key)         |
 | Tool registration      | OpenAI `tools=[]` from skills    | SDK `Tool(...)` from the **same** skills |
 | Progressive disclosure | Yes (built in)                   | Yes (carries over unchanged)             |
-| Tool selection control | Full — only your tools exist     | Partial — runtime adds its own built-ins |
+| Tool selection control | Full — only your tools exist   | Full — pinned via `available_tools` allowlist |
 | Streaming              | Per-chunk content events         | `assistant.message_delta` → content      |
 | Extras you get free    | None                             | Context compaction, session persistence  |
 | Hosting / dependency   | OpenAI SDK + Azure endpoint      | Bundled Copilot runtime binary           |
