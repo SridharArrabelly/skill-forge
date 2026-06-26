@@ -36,6 +36,13 @@
   #input { flex: 1; resize: none; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font: inherit; }
   button { background: var(--accent); color: #04122e; border: 0; border-radius: 10px; padding: 0 18px; font-weight: 600; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
+
+  /* Busy / progress indicator shown while the agent is working. */
+  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; padding: 2px 0; }
+  .spinner { width: 13px; height: 13px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .status .dots::after { content: ''; animation: dots 1.2s steps(4, end) infinite; }
+  @keyframes dots { 0% { content: ''; } 25% { content: '·'; } 50% { content: '··'; } 75%, 100% { content: '···'; } }
 </style>
 </head>
 <body>
@@ -102,17 +109,34 @@ function newAssistantTurn() {
   const wrap = el('div', 'msg assistant');
   const chips = el('div', 'chips');
   const body = el('div');
+  const status = el('div', 'status');
+  status.appendChild(el('span', 'spinner'));
+  const statusText = el('span');
+  statusText.innerHTML = 'Thinking<span class="dots"></span>';
+  status.appendChild(statusText);
   wrap.appendChild(chips);
   wrap.appendChild(body);
+  wrap.appendChild(status);
   log.appendChild(wrap);
-  return { chips, body, chipFor: {} };
+  return { wrap, chips, body, status, statusText, chipFor: {} };
+}
+
+function setStatus(turn, label) {
+  if (!turn.status) return;
+  turn.statusText.innerHTML = label + '<span class="dots"></span>';
+}
+
+function clearStatus(turn) {
+  if (turn.status) { turn.status.remove(); turn.status = null; }
 }
 
 function handleEvent(ev, turn) {
   if (ev.type === 'content') {
+    clearStatus(turn);
     turn.body.textContent += ev.text;
   } else if (ev.type === 'tool_call') {
     if (ev.status === 'start') {
+      setStatus(turn, 'Running ' + ev.skill);
       const chip = el('span', 'chip', '⚙ ' + ev.skill);
       turn.chips.appendChild(chip);
       turn.chipFor[ev.skill] = chip;
@@ -122,6 +146,7 @@ function handleEvent(ev, turn) {
       turn._lastDetails = det;
       turn.body.parentElement.insertBefore(det, turn.body);
     } else if (ev.status === 'result') {
+      setStatus(turn, 'Thinking');
       const chip = turn.chipFor[ev.skill];
       if (chip) { chip.classList.add('done'); chip.textContent = '✓ ' + ev.skill; }
       if (turn._lastDetails) {
@@ -130,6 +155,7 @@ function handleEvent(ev, turn) {
       }
     }
   } else if (ev.type === 'error') {
+    clearStatus(turn);
     turn.body.appendChild(el('div', 'warn', ev.message));
   }
   log.scrollTop = log.scrollHeight;
@@ -149,19 +175,23 @@ async function send(message) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const parts = buf.split('\n\n');
-    buf = parts.pop();
-    for (const part of parts) {
-      const line = part.trim();
-      if (!line.startsWith('data:')) continue;
-      const ev = JSON.parse(line.slice(5).trim());
-      if (ev.type === 'done') continue;
-      handleEvent(ev, turn);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        const ev = JSON.parse(line.slice(5).trim());
+        if (ev.type === 'done') continue;
+        handleEvent(ev, turn);
+      }
     }
+  } finally {
+    clearStatus(turn);
   }
 
   history.push({ role: 'user', content: message });
