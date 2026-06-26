@@ -14,6 +14,9 @@
   header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 12px; }
   header h1 { font-size: 16px; margin: 0; }
   header .tag { color: var(--muted); font-size: 13px; }
+  header .engine-pick { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  header .engine-pick label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  header select { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; font: inherit; font-size: 13px; }
   .layout { display: grid; grid-template-columns: 260px 1fr; height: calc(100vh - 51px); }
   aside { border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; }
   aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
@@ -49,6 +52,10 @@
 <header>
   <h1>skill-forge</h1>
   <span class="tag">one agent · one loop · N swappable skills</span>
+  <span class="engine-pick">
+    <label for="engine">Engine</label>
+    <select id="engine" title="Which orchestration engine runs the turn"></select>
+  </span>
 </header>
 <div class="layout">
   <aside>
@@ -70,6 +77,7 @@ const log = document.getElementById('log');
 const form = document.getElementById('form');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
+const engineSelect = document.getElementById('engine');
 const history = [];
 
 function el(tag, cls, text) {
@@ -77,6 +85,33 @@ function el(tag, cls, text) {
   if (cls) e.className = cls;
   if (text != null) e.textContent = text;
   return e;
+}
+
+async function loadEngines() {
+  try {
+    const res = await fetch('/api/engines');
+    const data = await res.json();
+    engineSelect.innerHTML = '';
+    for (const e of data.engines) {
+      const opt = document.createElement('option');
+      opt.value = e.id;
+      opt.textContent = e.label + (e.available ? '' : ' (unavailable)');
+      opt.disabled = !e.available;
+      opt.title = e.available ? e.description : (e.unavailable_reason || e.description);
+      if (e.id === data.default) opt.selected = true;
+      engineSelect.appendChild(opt);
+    }
+    // If the default is unavailable, fall back to the first available option.
+    if (engineSelect.selectedOptions[0] && engineSelect.selectedOptions[0].disabled) {
+      const firstOk = [...engineSelect.options].find((o) => !o.disabled);
+      if (firstOk) engineSelect.value = firstOk.value;
+    }
+    engineSelect.onchange = () => {
+      const o = engineSelect.selectedOptions[0];
+      if (o) engineSelect.title = o.title;
+    };
+    engineSelect.onchange();
+  } catch (e) { /* backend not ready */ }
 }
 
 async function loadSkills() {
@@ -192,7 +227,7 @@ async function send(message) {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({ message, history, engine: engineSelect.value || null }),
   });
 
   const reader = res.body.getReader();
@@ -234,6 +269,7 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
 });
 
+loadEngines();
 loadSkills();
 </script>
 </body>

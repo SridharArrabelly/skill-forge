@@ -24,6 +24,8 @@ class ChatRequest(BaseModel):
     message: str
     # Prior turns, oldest-first. The client owns history in this minimal cut.
     history: list[ChatMessage] = Field(default_factory=list)
+    # Which orchestration engine to run this turn through. None -> server default.
+    engine: str | None = None
 
 
 # ── SSE events ──────────────────────────────────────────────────────────────

@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.config import REPO_ROOT, get_settings
 from app.models import ChatRequest
-from app.agent import Agent
+from app.engines import EngineRegistry
 from app.skill_registry import SkillRegistry
 from app.skill_tools import SkillToolset
 
@@ -44,7 +44,7 @@ app = FastAPI(title="skill-forge", version="0.1.0")
 _settings = get_settings()
 _registry = SkillRegistry(_settings.skills_path).load()
 _toolset = SkillToolset(_registry).build()
-_agent = Agent(_settings, _toolset)
+_engines = EngineRegistry(_settings, _toolset)
 
 
 @app.get("/api/skills")
@@ -74,12 +74,25 @@ def reload_skills() -> JSONResponse:
     return list_skills()
 
 
+@app.get("/api/engines")
+def list_engines() -> JSONResponse:
+    """Return the available orchestration engines for the UI selector."""
+    return JSONResponse(
+        {"default": _engines.default_id, "engines": _engines.infos()}
+    )
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
-    """Stream the agent's Reason->Act->Observe events as SSE."""
+    """Stream the agent's Reason->Act->Observe events as SSE.
+
+    The `engine` field selects which orchestration backend runs the turn; all
+    engines emit the same event contract, so the UI is engine-agnostic.
+    """
+    engine = _engines.get(req.engine)
 
     async def event_stream():
-        async for event in _agent.run(req.message, req.history):
+        async for event in engine.run(req.message, req.history):
             yield f"data: {json.dumps(event, default=str)}\n\n"
 
     return StreamingResponse(
