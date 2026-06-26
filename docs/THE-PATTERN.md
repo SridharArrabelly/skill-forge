@@ -271,6 +271,7 @@ faster there.
 | Discover folders, parse `SKILL.md` | `backend/app/skill_registry.py` |
 | Build OpenAI tools + `load_skill_instructions`, dispatch calls | `backend/app/skill_tools.py` |
 | The single Reason → Act → Observe loop + system prompt | `backend/app/agent.py` |
+| The engine abstraction (run the same skills under different orchestrators) | `backend/app/engines/` — see [ENGINES.md](ENGINES.md) |
 | FastAPI endpoints + SSE streaming + UI | `backend/app/main.py` |
 | The two starter skills | `skills/web-grounding/`, `skills/rag-search/` |
 
