@@ -1,0 +1,37 @@
+[project]
+name = "skill-forge"
+version = "0.1.0"
+description = "One agent, one agentic loop, N swappable skills — a minimal local-first chat app."
+readme = "README.md"
+# Pinned below 3.14: pydantic-core has no 3.14 wheel yet and would try to
+# compile from Rust (and fail) on a clean machine.
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    "openai==1.57.4",
+    "pydantic==2.10.3",
+    "pydantic-settings==2.6.1",
+    "pyyaml==6.0.2",
+    "python-dotenv==1.0.1",
+    "httpx==0.28.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.4"]
+
+[project.scripts]
+# `uv run skill-forge` starts the dev server.
+skill-forge = "app.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The importable package lives under backend/.
+packages = ["backend/app"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]

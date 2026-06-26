@@ -82,17 +82,29 @@ web/index.html       # minimal chat UI with skill-invocation chips
    Copy-Item .env.example .env
    # edit .env with your Azure OpenAI endpoint / key / deployment
    ```
-2. Install deps:
+2. Start it — pick whichever toolchain you use:
+
+   **With `uv`** (recommended; resolves Python 3.12/3.13 automatically):
+   ```powershell
+   uv run skill-forge
+   ```
+
+   **With pip + venv:**
    ```powershell
    python -m venv .venv; .\.venv\Scripts\Activate.ps1
    pip install -r backend/requirements.txt
+   python backend/app/main.py          # or: uvicorn app.main:app --app-dir backend --reload
    ```
-3. Start the backend (serves the UI too):
-   ```powershell
-   uvicorn app.main:app --app-dir backend --reload
-   ```
-4. Open http://localhost:8000 and chat. Watch the skill-invocation chips to see which
+3. Open http://localhost:8000 and chat. Watch the skill-invocation chips to see which
    skill the single loop decided to use.
+
+> Note: use Python **3.12 or 3.13**. On 3.14 the pinned `pydantic-core` has no wheel yet
+> and would try (and fail) to build from Rust. `uv run` handles this for you.
+
+Run the tests:
+```powershell
+uv run --extra dev pytest        # or: .\.venv\Scripts\python.exe -m pytest backend/tests
+```
 
 ## Status
 

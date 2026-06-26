@@ -12,7 +12,16 @@ store in this minimal cut.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+# Make the package importable whether launched as `uvicorn app.main:app`
+# (with --app-dir backend) OR directly as `python backend/app/main.py`.
+# In the direct case Python only puts backend/app/ on sys.path, so `app` is
+# not importable until we add backend/ ourselves.
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -83,3 +92,14 @@ async def chat(req: ChatRequest) -> StreamingResponse:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
+
+
+def main() -> None:
+    """Run the dev server: `python backend/app/main.py` or `uv run skill-forge`."""
+    import uvicorn
+
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
+
+
+if __name__ == "__main__":
+    main()
