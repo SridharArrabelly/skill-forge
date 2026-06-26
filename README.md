@@ -64,9 +64,9 @@ User ─▶ web/index.html ──SSE──▶ /api/chat ─▶ engine (selected 
    ┌──────────────────┬──────────────────┬─────┴────────────────┐
    ▼                  ▼                  ▼                        ▼
  handrolled        copilot_sdk      copilot_sdk_byom        agent_framework
- you own the       Copilot runtime  Copilot runtime         Agent Framework loop
- loop (agent.py),  owns the loop,   owns the loop,          ▸ Copilot SDK (BYOM)
- your Azure OpenAI  Copilot models   your Azure OpenAI       ▸ your Azure OpenAI
+ you own the       Copilot runtime  Copilot runtime         Copilot runtime owns
+ loop (agent.py),  owns the loop,   owns the loop,          the loop; AF wraps it
+ your Azure OpenAI  Copilot models   your Azure OpenAI       (BYOM) your Azure OpenAI
    └──────────────────┴──────────────────┴─────┬────────────────┘
                                                ▼
                               the SAME skill tools (skill_tools.py)
@@ -94,7 +94,7 @@ backend/app/
     handrolled.py    #   Stage 1: adapter over agent.py
     copilot_sdk.py   #   Stage 2: GitHub Copilot SDK (runtime owns the loop)
     copilot_sdk_byom.py #  Stage 2b: Copilot SDK runtime loop, BYOM your Azure OpenAI
-    agent_framework.py #   Stage 3: Agent Framework loop ▸ Copilot SDK (BYOM) ▸ your model
+    agent_framework.py #   Stage 3: Agent Framework wraps the Copilot SDK runtime loop (BYOM)
     byom.py          #   shared Azure "Bring Your Own Model" provider config
     __init__.py      #   EngineRegistry + ENGINE_CLASSES (register new engines here)
   main.py            # FastAPI: /api/chat (SSE), /api/engines, /api/skills, serves UI
@@ -182,10 +182,10 @@ skills behind the same event stream; only the loop changes:
   to **your own Azure OpenAI deployment** via a Bring-Your-Own-Model provider config. Clean
   A/B against the previous engine: same loop, only the model swaps (and billing stays on
   your Azure subscription).
-- **Agent Framework + Copilot SDK (BYOM)** → Microsoft Agent Framework owns the loop and
-  drives the Copilot runtime in BYOM mode, on your Azure OpenAI. Stacks a framework loop on
-  top of the Copilot runtime — the "everything managed, but on your model" end of the
-  spectrum.
+- **Agent Framework + Copilot SDK (BYOM)** → Microsoft Agent Framework wraps the **same
+  Copilot runtime loop as the engine above** (the runtime still owns the loop), in BYOM mode
+  on your Azure OpenAI. For a single agent it adds little over `copilot_sdk_byom`; the value
+  is future-facing — model portability behind one agent API and multi-agent orchestration.
 
 > The two BYOM engines need both a logged-in Copilot user *and* `AZURE_OPENAI_*` + `az login`,
 > and the deployment must be an o-series or gpt-5 family model (the SDK encrypts prompts).

@@ -13,14 +13,25 @@ This doc grows one section per engine as we build them.
             you own the loop  ───────────────────────────────►  fully managed
   Stage 1        Stage 2          Stage 2b            Stage 3            Stage 4
  Hand-rolled   Copilot SDK     Copilot SDK (BYOM)  Agent Framework   Foundry Agent
- ReAct loop    runtime loop    runtime loop        + Copilot SDK     Service
- your AOAI     Copilot models  your AOAI (BYOM)    (BYOM) your AOAI  (planned)
+ ReAct loop    runtime loop    runtime loop        wraps the same    Service
+ your AOAI     Copilot models  your AOAI (BYOM)    runtime loop      (planned)
+                                                   (BYOM) your AOAI
 ```
 
-The two axes this project teaches: **who owns the loop** (left → right) and **whose
-model runs underneath** (Copilot-hosted vs. your own Azure OpenAI, "BYOM"). Stage 2
-vs. 2b isolates *just the model backend* (same Copilot loop); Stage 1 vs. 3 isolates
-*just the loop owner* (same Azure OpenAI model).
+The two axes this project teaches: **who owns the loop** and **whose model runs
+underneath** (Copilot-hosted vs. your own Azure OpenAI, "BYOM").
+
+- **Who owns the tool-calling loop:** Stage 1 = *you*. Stages 2, 2b **and 3** all run
+  on the **Copilot runtime's** loop — Agent Framework (Stage 3) is a *wrapper around*
+  that loop, not a second loop (see the Stage 3 section). Stage 4 = a hosted service.
+- **Whose model:** Copilot-hosted (Stage 2) vs. your own Azure OpenAI (Stages 1, 2b, 3).
+
+Clean A/B comparisons this enables:
+- **Stage 2 vs. 2b** isolates *just the model backend* (same Copilot loop).
+- **Stage 1 vs. 2b** isolates *just the loop owner* (same Azure OpenAI model — you own
+  the loop vs. the Copilot runtime owns it).
+- **Stage 2b vs. 3** isolates *just the framework wrapper* — **same loop owner, same
+  model**. It shows what Agent Framework adds (and, for a single agent, how little).
 
 ---
 
@@ -135,18 +146,28 @@ Things worth knowing:
 (`from agent_framework import FunctionTool`, `from agent_framework.github import
 GitHubCopilotAgent`) + the GitHub Copilot SDK.
 
-This stage stacks **two** managed pieces — it's the deliberate fusion of Stage 2b
-and a framework-owned loop:
+This stage runs the **same Copilot runtime loop as Stage 2b**, but reaches it through
+**Microsoft Agent Framework** instead of the raw SDK. Two things are true at once, and
+getting them straight is the whole point of this stage:
 
-- **Microsoft Agent Framework owns the agentic loop** (we don't hand-write Reason →
-  Act → Observe at all), and
-- **the GitHub Copilot SDK is the model backend, in BYOM mode** — the framework's
-  `GitHubCopilotAgent` drives the Copilot runtime, which we point at **your own
-  Azure OpenAI deployment** via the *same* `provider` config Stage 2b uses.
+- **The Copilot SDK runtime still owns the agentic loop.** Agent Framework does **not**
+  hand-write or run a Reason → Act → Observe loop here. Its `GitHubCopilotAgent`
+  converts your tools to Copilot SDK tools, hands them to `create_session(...)`, and
+  then just **reads the runtime's event stream and re-emits it** as framework events.
+  The library says so itself — from `agent_framework_github_copilot/_agent.py`:
 
-So the stack is: **Agent Framework loop ▸ Copilot SDK runtime ▸ your Azure OpenAI.**
-It's the "everything managed, but on your model" end of the spectrum, short of a
-fully hosted service. (This mirrors the
+  > *"The Copilot CLI manages its own tool-calling loop, so the framework cannot
+  > round-trip a `FunctionApprovalRequestContent` / `FunctionApprovalResponseContent`
+  > pair the way the standard chat-client pipeline does."*
+
+- **The GitHub Copilot SDK is the model backend, in BYOM mode** — `GitHubCopilotAgent`
+  drives the Copilot runtime, which we point at **your own Azure OpenAI deployment**
+  via the *same* `provider` config Stage 2b uses.
+
+So the stack is: **Agent Framework (wrapper) ▸ Copilot SDK runtime (owns the loop) ▸
+your Azure OpenAI.** Compared to Stage 2b, the *only* thing that changes is the
+**surface you program against**, not who runs the loop or which model answers. (This
+mirrors the
 [Agent Framework + Copilot SDK](https://devblogs.microsoft.com/agent-framework/build-ai-agents-with-github-copilot-sdk-and-microsoft-agent-framework/)
 pattern from the user's `agent-framework-sdk-lab`, with a BYOM `provider` added.)
 
@@ -164,14 +185,32 @@ How it reuses the shared layer with zero duplication:
 
 The headline differences from Stage 1:
 
-- **Who owns the loop:** the framework (driving the Copilot runtime). We lose the
-  line-by-line visibility of Stage 1's loop but gain managed tool orchestration,
-  middleware, and multi-turn sessions for free.
+- **Who owns the loop:** the **Copilot runtime** (not the framework, and not you).
+  Stage 1 you can read line-by-line in `app/agent.py`; here the loop lives inside the
+  runtime and Agent Framework only wraps it. Same as Stage 2b on this axis.
 - **Same model, doubled auth:** your Azure OpenAI deployment (keyless,
   `DefaultAzureCredential`) — *plus* a logged-in Copilot user, since the runtime
   still authenticates to GitHub to start.
 
-**Progressive disclosure survives — even with a framework loop on a BYOM backend.**
+**What does Agent Framework actually buy you here?** For a *single* agent like
+skill-forge — honestly, very little today. It's a near pass-through over the same
+Stage-2b runtime loop, so you pay one extra abstraction layer for no functional gain.
+The value is **future-facing**, and that's the reason to learn it:
+
+- **Model portability behind one agent API.** Swap the Copilot SDK backend for
+  `OpenAIChatClient`, Azure AI Foundry, Anthropic, etc. without rewriting the engine —
+  `agent.run(...)` stays the same.
+- **Multi-agent orchestration.** Compose several agents (handoffs, parallel agents,
+  shared threads) — the `07_multi_agent_workflow.py` pattern from the lab. This is the
+  payoff the framework exists for; a one-agent app simply doesn't exercise it yet.
+- **Middleware, typed sessions, observability/eval hooks** that you'd otherwise
+  hand-roll.
+
+In other words: Stage 3 isn't "more managed than Stage 2b." It's Stage 2b's loop with
+a **framework surface** on top — bet on it when you expect to grow past one agent or
+need to keep your model choices open, not for single-agent throughput.
+
+**Progressive disclosure survives — even through a framework wrapper on a BYOM backend.**
 Verified end-to-end: the model called `load_skill_instructions("rag-search")` and
 *then* answered from the skill — the same Stage-1 pattern, no special prompting.
 
@@ -192,7 +231,7 @@ Verified end-to-end: the model called `load_skill_instructions("rag-search")` an
 
 | Dimension              | Stage 1 — Hand-rolled            | Stage 2 — Copilot SDK                    | Stage 2b — Copilot SDK (BYOM)            | Stage 3 — Agent Framework + Copilot SDK (BYOM) |
 | ---------------------- | -------------------------------- | ---------------------------------------- | ---------------------------------------- | ---------------------------------------- |
-| Who owns the loop      | **You** (`app/agent.py`)         | Copilot CLI **runtime**                  | Copilot CLI **runtime**                  | Agent **Framework** (drives Copilot runtime) |
+| Who owns the loop      | **You** (`app/agent.py`)         | Copilot CLI **runtime**                  | Copilot CLI **runtime**                  | Copilot CLI **runtime** (AF only wraps it) |
 | Loop code to maintain  | ~170 lines, fully visible        | ~0 (event translation only)              | ~0 (subclass adds ~1 option)             | ~0 (event translation only)              |
 | Model / provider       | Your Azure OpenAI deployment     | Copilot models (gpt-5.x, claude, gemini) | **Your Azure OpenAI** (BYOM)             | **Your Azure OpenAI** (BYOM)             |
 | Auth                   | `DefaultAzureCredential` (keyless)| Logged-in Copilot user (no key)         | Copilot user **+** keyless Azure         | Copilot user **+** keyless Azure         |
@@ -201,7 +240,7 @@ Verified end-to-end: the model called `load_skill_instructions("rag-search")` an
 | Tool selection control | Full — only your tools exist   | Full — `available_tools` allowlist     | Full — `available_tools` allowlist     | Tools approved via `on_permission_request` |
 | Model constraint       | Any Azure deployment             | Any Copilot model                        | **o-series / gpt-5 only** (encryption)   | **o-series / gpt-5 only** (encryption)   |
 | Streaming              | Per-chunk content events         | `assistant.message_delta` → content      | `assistant.message_delta` → content      | `agent.run(stream=True)` updates → content |
-| Extras you get free    | None                             | Compaction, session persistence          | Compaction, session persistence          | Tool orchestration, middleware, sessions |
+| Extras you get free    | None                             | Compaction, session persistence          | Compaction, session persistence          | Model portability, multi-agent, middleware |
 | Hosting / dependency   | OpenAI SDK + Azure endpoint      | Bundled Copilot runtime binary           | Copilot runtime + Azure endpoint         | `agent-framework` + Copilot runtime + Azure |
 | Lock-in                | Low (any OpenAI-compatible API)  | Medium (Copilot platform + subscription) | Medium (Copilot runtime, your model)     | Medium (framework + Copilot runtime, your model) |
 
@@ -212,9 +251,10 @@ Verified end-to-end: the model called `load_skill_instructions("rag-search")` an
   Copilot — happy to run on Copilot's models.
 - **Stage 2b** when you want that same managed Copilot loop but need inference on
   **your own Azure OpenAI** (data residency, billing, a specific deployment).
-- **Stage 3** when you additionally want **framework conveniences** (middleware,
-  multi-agent workflows, typed sessions) on top of the Copilot runtime — still on
-  your own model.
+- **Stage 3** when you expect to **grow past one agent** (multi-agent workflows) or want
+  **model portability** behind one agent API — Agent Framework conveniences (middleware,
+  typed sessions) layered over the *same* Copilot runtime loop as 2b, on your own model.
+  For a single agent it adds little over Stage 2b; the value is future-facing.
 
 ---
 

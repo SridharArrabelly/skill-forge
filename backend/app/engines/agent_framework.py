@@ -1,19 +1,24 @@
 """Stage 3 engine: Microsoft Agent Framework over the GitHub Copilot SDK (BYOM).
 
-This stage combines two managed pieces:
+This stage runs the *same Copilot runtime loop as Stage 2b*, but reaches it through
+Microsoft Agent Framework instead of the raw SDK. Two things are true at once:
 
-* **Microsoft Agent Framework owns the agentic loop** — we don't hand-write Reason
-  → Act → Observe (Stage 1) at all. We build a framework agent, register our skills
-  as framework tools, and stream a turn.
+* **The Copilot SDK runtime still owns the agentic loop** — Agent Framework does NOT
+  hand-write or run a Reason → Act → Observe loop here. Its `GitHubCopilotAgent`
+  converts our skills to Copilot SDK tools, hands them to `create_session(...)`, then
+  reads the runtime's event stream and re-emits it as framework events. The library
+  itself notes: "The Copilot CLI manages its own tool-calling loop" (see
+  `agent_framework_github_copilot/_agent.py`).
 * **The Copilot SDK is the model backend, in Bring-Your-Own-Model mode** — the
   framework's `GitHubCopilotAgent` drives the Copilot CLI runtime, and we point that
   runtime at *your own Azure OpenAI deployment* via a `provider` config (BYOM)
   instead of GitHub's hosted models.
 
-So the stack here is: Agent Framework loop ▸ Copilot SDK runtime ▸ your Azure
-OpenAI. It's the deliberate fusion of Stage 2b (Copilot SDK BYOM) and a
-framework-owned loop — the "everything managed, but on your model" end of the
-spectrum, short of a fully hosted service.
+So the stack here is: Agent Framework (wrapper) ▸ Copilot SDK runtime (owns the loop)
+▸ your Azure OpenAI. Compared to Stage 2b, the only thing that changes is the surface
+you program against — not who runs the loop or which model answers. For a *single*
+agent like this one, Agent Framework adds little functionally; its value is
+future-facing: model portability behind one agent API, and multi-agent orchestration.
 
 How it reuses the shared layer with zero duplication:
 
@@ -51,10 +56,10 @@ class AgentFrameworkEngine(AgentEngine):
     id = "agent_framework"
     label = "Agent Framework + Copilot SDK (BYOM)"
     description = (
-        "Microsoft Agent Framework owns the agentic loop and drives the GitHub "
-        "Copilot SDK runtime in Bring-Your-Own-Model mode — pointed at your own "
-        "Azure OpenAI deployment. Same skills as every engine, exposed as framework "
-        "function tools."
+        "Microsoft Agent Framework wrapping the GitHub Copilot SDK runtime (which "
+        "still owns the tool-calling loop) in Bring-Your-Own-Model mode — pointed at "
+        "your own Azure OpenAI deployment. Same skills as every engine, exposed as "
+        "framework function tools."
     )
 
     def __init__(self, settings, toolset) -> None:
@@ -214,10 +219,10 @@ class AgentFrameworkEngine(AgentEngine):
         model = self.settings.azure_openai_deployment
 
         async def produce() -> None:
-            # The framework owns the loop: it streams text and, mid-stream, awaits
-            # our tool handlers (which enqueue their own tool_call events). Running
-            # this in a task lets run() drain a single ordered queue. Entering the
-            # agent context manager spawns the Copilot runtime for this turn.
+            # The Copilot runtime owns the loop; the framework streams its text and,
+            # mid-stream, awaits our tool handlers (which enqueue their own tool_call
+            # events). Running this in a task lets run() drain a single ordered queue.
+            # Entering the agent context manager spawns the Copilot runtime for this turn.
             try:
                 async with agent_cm as agent:
                     async for update in agent.run(prompt, stream=True):
