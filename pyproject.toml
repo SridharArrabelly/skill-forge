@@ -16,6 +16,9 @@ dependencies = [
     "pyyaml==6.0.2",
     "python-dotenv==1.0.1",
     "httpx==0.28.1",
+    # Skill backends:
+    "azure-search-documents==11.5.2",  # rag-search -> Azure AI Search
+    "webiq[entra]>=0.1.0",             # web-grounding -> WebIQ
 ]
 
 [project.optional-dependencies]
