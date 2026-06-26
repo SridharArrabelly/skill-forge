@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from app.config import Settings
 from app.engines.base import AgentEngine
+from app.engines.copilot_sdk import CopilotSdkEngine
 from app.engines.handrolled import HandRolledEngine
 from app.skill_tools import SkillToolset
 
@@ -16,6 +17,7 @@ from app.skill_tools import SkillToolset
 # get appended here as we build them.
 ENGINE_CLASSES: list[type[AgentEngine]] = [
     HandRolledEngine,
+    CopilotSdkEngine,
 ]
 
 

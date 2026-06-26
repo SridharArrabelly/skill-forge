@@ -19,6 +19,8 @@ dependencies = [
     # Skill backends:
     "azure-search-documents==11.5.2",  # rag-search -> Azure AI Search
     "webiq[entra]>=0.1.0",             # web-grounding -> WebIQ
+    # Engines:
+    "github-copilot-sdk==1.0.4",       # copilot_sdk engine (Stage 2)
 ]
 
 [project.optional-dependencies]

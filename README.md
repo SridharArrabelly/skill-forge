@@ -14,7 +14,9 @@ Reason → Act → Observe loop over Azure OpenAI, and a one-file chat UI.
 
 > **New here?** Read **[docs/THE-PATTERN.md](docs/THE-PATTERN.md)** for a guided
 > explanation of how this differs from a plain function-calling agent, what
-> *progressive disclosure* is, and when the approach pays off.
+> *progressive disclosure* is, and when the approach pays off. Then see
+> **[docs/ENGINES.md](docs/ENGINES.md)** for how the *same* skills run under
+> different orchestration engines (hand-rolled loop vs. GitHub Copilot SDK …).
 
 ## The core idea
 
@@ -122,3 +124,15 @@ Both starter skills are **wired to real backends**:
 
 Auth is keyless-first (`DefaultAzureCredential` / `az login`); set the matching API key
 in `.env` only if you prefer key-based auth. See `.env.example` for all variables.
+
+**Engines.** The chat UI has an **engine** selector. Each engine drives the same two
+skills behind the same event stream; only the loop changes:
+
+- **Hand-rolled ReAct loop** (default) → our own Reason → Act → Observe over Azure OpenAI.
+- **GitHub Copilot SDK** → the Copilot CLI runtime owns the loop; authenticates as your
+  logged-in Copilot user (no key, no Azure OpenAI) and runs on Copilot models. Requires
+  `pip install github-copilot-sdk` and `python -m copilot download-runtime`. Pick a model
+  with `COPILOT_SDK_MODEL` (default `gpt-5.4-mini`).
+
+See **[docs/ENGINES.md](docs/ENGINES.md)** for the full comparison. More engines
+(Agent Framework, Foundry Agent Service) are planned.
