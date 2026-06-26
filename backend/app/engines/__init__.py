@@ -8,6 +8,7 @@ automatically. The shared skills/tools and the SSE event contract stay the same.
 from __future__ import annotations
 
 from app.config import Settings
+from app.engines.agent_framework import AgentFrameworkEngine
 from app.engines.base import AgentEngine
 from app.engines.copilot_sdk import CopilotSdkEngine
 from app.engines.handrolled import HandRolledEngine
@@ -18,6 +19,7 @@ from app.skill_tools import SkillToolset
 ENGINE_CLASSES: list[type[AgentEngine]] = [
     HandRolledEngine,
     CopilotSdkEngine,
+    AgentFrameworkEngine,
 ]
 
 

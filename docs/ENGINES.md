@@ -13,7 +13,7 @@ This doc grows one section per engine as we build them.
             you own the loop  ───────────────────────────────►  fully managed
    Stage 1               Stage 2               Stage 3            Stage 4
  Hand-rolled        GitHub Copilot SDK     Agent Framework     Foundry Agent
- ReAct loop         (CLI runtime loop)        (planned)        Service (planned)
+ ReAct loop         (CLI runtime loop)    (framework loop)    Service (planned)
 ```
 
 ---
@@ -83,33 +83,84 @@ and no built-in tools at all.
 
 ---
 
+## Stage 3 — Microsoft Agent Framework (`agent_framework`)
+
+**File:** `app/engines/agent_framework.py`. Packages: `agent-framework`
+(`from agent_framework import FunctionTool`, `from agent_framework.openai import
+OpenAIChatClient`).
+
+Like Stage 2, we **don't write the loop** — Microsoft Agent Framework owns it. But
+unlike Stage 2, the model behind the loop is **your own Azure OpenAI deployment**
+(the same backend Stage 1 calls directly). That's the whole point of this engine:
+it isolates the single variable **"who owns the loop"** while holding the model
+constant against Stage 1.
+
+How it reuses the shared layer with zero duplication:
+
+1. Each entry from `SkillToolset.openai_tools()` becomes a framework `FunctionTool`
+   built from an **explicit JSON schema** — `FunctionTool(name=..., description=...,
+   input_model=<json-schema dict>, func=handler)`. No typed Python signature is
+   required, so the model sees the *same* tools (`rag_search`, `web_grounding`,
+   `load_skill_instructions`) as every other engine. Each handler calls straight
+   back into `SkillToolset.call(...)`.
+2. We build one `Agent` over an `OpenAIChatClient` pointed at our Azure OpenAI
+   resource, stream a turn with `agent.run(prompt, stream=True)`, and translate the
+   framework's streamed text plus our handler callbacks into the shared SSE events.
+
+The headline differences from Stage 1:
+
+- **Who owns the loop:** the framework. We lose the line-by-line visibility of
+  Stage 1's ~170-line loop but gain managed tool orchestration, middleware, and
+  multi-turn sessions for free.
+- **Same model, same auth:** your Azure OpenAI deployment, keyless via
+  `DefaultAzureCredential` (`az login`) — identical to Stage 1.
+
+**Progressive disclosure survives — even under a framework-owned loop.** In
+testing, the model called `load_skill_instructions("rag-search")` and *then*
+`rag_search`, exactly the Stage-1 pattern, with no special prompting.
+
+**Two wiring gotchas worth knowing** (both handled in `_get_client`, and good
+illustrations of how a managed client can fight your environment):
+
+- `OpenAIChatClient` is a **Responses API** client, which needs a recent API
+  version. We deliberately **don't pass `api_version`** so the SDK uses its
+  Responses-compatible default; pinning the older `2024-10-21` that Stage 1 uses
+  for chat-completions makes the Responses endpoint reject the call
+  ("API version not supported").
+- Our `.env` uses an **empty** `AZURE_OPENAI_API_KEY` to mean "keyless". The SDK
+  reads that env var, and an *empty* value poisons credential resolution (it
+  commits to key-auth, then fails with "Missing credentials"). So when keyless we
+  drop the blank var before building the client.
+
+---
+
 ## Side-by-side
 
-| Dimension              | Stage 1 — Hand-rolled            | Stage 2 — Copilot SDK                    |
-| ---------------------- | -------------------------------- | ---------------------------------------- |
-| Who owns the loop      | **You** (`app/agent.py`)         | Copilot CLI **runtime**                  |
-| Loop code to maintain  | ~170 lines, fully visible        | ~0 (you write event translation only)    |
-| Model / provider       | Your Azure OpenAI deployment     | Copilot models (gpt-5.x, claude, gemini) |
-| Auth                   | `DefaultAzureCredential` (keyless)| Logged-in Copilot user (no key)         |
-| Tool registration      | OpenAI `tools=[]` from skills    | SDK `Tool(...)` from the **same** skills |
-| Progressive disclosure | Yes (built in)                   | Yes (carries over unchanged)             |
-| Tool selection control | Full — only your tools exist   | Full — pinned via `available_tools` allowlist |
-| Streaming              | Per-chunk content events         | `assistant.message_delta` → content      |
-| Extras you get free    | None                             | Context compaction, session persistence  |
-| Hosting / dependency   | OpenAI SDK + Azure endpoint      | Bundled Copilot runtime binary           |
-| Lock-in                | Low (any OpenAI-compatible API)  | Medium (Copilot platform + subscription) |
+| Dimension              | Stage 1 — Hand-rolled            | Stage 2 — Copilot SDK                    | Stage 3 — Agent Framework                |
+| ---------------------- | -------------------------------- | ---------------------------------------- | ---------------------------------------- |
+| Who owns the loop      | **You** (`app/agent.py`)         | Copilot CLI **runtime**                  | Agent **Framework**                      |
+| Loop code to maintain  | ~170 lines, fully visible        | ~0 (you write event translation only)    | ~0 (you write event translation only)    |
+| Model / provider       | Your Azure OpenAI deployment     | Copilot models (gpt-5.x, claude, gemini) | **Your Azure OpenAI deployment**         |
+| Auth                   | `DefaultAzureCredential` (keyless)| Logged-in Copilot user (no key)         | `DefaultAzureCredential` (keyless)       |
+| Tool registration      | OpenAI `tools=[]` from skills    | SDK `Tool(...)` from the **same** skills | `FunctionTool(...)` from the **same** skills |
+| Progressive disclosure | Yes (built in)                   | Yes (carries over unchanged)             | Yes (carries over unchanged)             |
+| Tool selection control | Full — only your tools exist   | Full — pinned via `available_tools` allowlist | Full — only your tools registered    |
+| Streaming              | Per-chunk content events         | `assistant.message_delta` → content      | `agent.run(stream=True)` updates → content |
+| Extras you get free    | None                             | Context compaction, session persistence  | Tool orchestration, middleware, sessions |
+| Hosting / dependency   | OpenAI SDK + Azure endpoint      | Bundled Copilot runtime binary           | `agent-framework` + Azure endpoint       |
+| Lock-in                | Low (any OpenAI-compatible API)  | Medium (Copilot platform + subscription) | Low–medium (framework API, your model)   |
 
-**Rule of thumb:** reach for Stage 1 when you need to *see and control* every
-step (debugging, custom routing, strict tool boundaries). Reach for Stage 2 when
-you want a capable managed loop and your users already have Copilot — at the cost
-of some control over how the loop behaves.
+**Rule of thumb:** reach for Stage 1 when you need to *see and control* every step
+(debugging, custom routing, strict tool boundaries). Reach for Stage 2 when you
+want a capable managed loop and your users already have Copilot. Reach for Stage 3
+when you want a managed loop **on your own model/infra** — framework conveniences
+(middleware, multi-agent workflows, sessions) without giving up your Azure OpenAI
+deployment.
 
 ---
 
 ## Coming next
 
-- **Stage 3 — Microsoft Agent Framework** (local, bring-your-own Azure OpenAI):
-  a framework-owned loop you still host yourself.
 - **Stage 4 — Azure AI Foundry Agent Service** (hosted; tools run server-side):
   the fully-managed end of the spectrum.
 
