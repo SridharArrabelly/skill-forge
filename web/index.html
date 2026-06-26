@@ -130,14 +130,37 @@ function clearStatus(turn) {
   if (turn.status) { turn.status.remove(); turn.status = null; }
 }
 
+// Map raw tool/skill names to human-friendly labels for the UI.
+const SKILL_LABELS = {
+  rag_search:               { status: 'Searching the knowledge base', chip: 'Knowledge base' },
+  web_grounding:            { status: 'Searching the web',            chip: 'Web search' },
+  load_skill_instructions:  { status: 'Reading the skill playbook',   chip: 'Skill playbook' },
+};
+
+function humanize(name) {
+  return (name || 'tool').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function labelFor(skill, args) {
+  const base = SKILL_LABELS[skill];
+  // load_skill_instructions carries the target skill name in its args.
+  if (skill === 'load_skill_instructions' && args && args.name) {
+    const nice = humanize(args.name);
+    return { status: 'Reading the ' + nice + ' playbook', chip: nice + ' playbook' };
+  }
+  if (base) return base;
+  return { status: 'Running ' + humanize(skill), chip: humanize(skill) };
+}
+
 function handleEvent(ev, turn) {
   if (ev.type === 'content') {
     clearStatus(turn);
     turn.body.textContent += ev.text;
   } else if (ev.type === 'tool_call') {
+    const label = labelFor(ev.skill, ev.arguments);
     if (ev.status === 'start') {
-      setStatus(turn, 'Running ' + ev.skill);
-      const chip = el('span', 'chip', '⚙ ' + ev.skill);
+      setStatus(turn, label.status);
+      const chip = el('span', 'chip', '⚙ ' + label.chip);
       turn.chips.appendChild(chip);
       turn.chipFor[ev.skill] = chip;
       const det = el('details', 'tool');
@@ -148,7 +171,7 @@ function handleEvent(ev, turn) {
     } else if (ev.status === 'result') {
       setStatus(turn, 'Thinking');
       const chip = turn.chipFor[ev.skill];
-      if (chip) { chip.classList.add('done'); chip.textContent = '✓ ' + ev.skill; }
+      if (chip) { chip.classList.add('done'); chip.textContent = '✓ ' + label.chip; }
       if (turn._lastDetails) {
         turn._lastDetails.appendChild(
           el('pre', null, 'result: ' + JSON.stringify(ev.result, null, 2)));
