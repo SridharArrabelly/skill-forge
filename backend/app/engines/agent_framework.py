@@ -1,11 +1,19 @@
-"""Stage 3 engine: Microsoft Agent Framework (the framework owns the loop).
+"""Stage 3 engine: Microsoft Agent Framework over the GitHub Copilot SDK (BYOM).
 
-Where it sits on the spectrum: like Stage 2, we don't hand-write the Reason →
-Act → Observe loop — **Microsoft Agent Framework owns it**. But unlike Stage 2,
-the model behind the loop is *our own Azure OpenAI deployment* (the same backend
-Stage 1 calls directly). So the clean contrast this engine isolates is purely
-**"who owns the loop"**: same Azure OpenAI model as Stage 1, same skills as every
-engine, but the agentic loop is now a managed framework instead of our ~30 lines.
+This stage combines two managed pieces:
+
+* **Microsoft Agent Framework owns the agentic loop** — we don't hand-write Reason
+  → Act → Observe (Stage 1) at all. We build a framework agent, register our skills
+  as framework tools, and stream a turn.
+* **The Copilot SDK is the model backend, in Bring-Your-Own-Model mode** — the
+  framework's `GitHubCopilotAgent` drives the Copilot CLI runtime, and we point that
+  runtime at *your own Azure OpenAI deployment* via a `provider` config (BYOM)
+  instead of GitHub's hosted models.
+
+So the stack here is: Agent Framework loop ▸ Copilot SDK runtime ▸ your Azure
+OpenAI. It's the deliberate fusion of Stage 2b (Copilot SDK BYOM) and a
+framework-owned loop — the "everything managed, but on your model" end of the
+spectrum, short of a fully hosted service.
 
 How it reuses the shared layer with zero duplication:
 
@@ -13,46 +21,40 @@ How it reuses the shared layer with zero duplication:
    `load_skill_instructions`, so progressive disclosure still works) becomes an
    Agent Framework `FunctionTool` built from the *explicit JSON schema* — no typed
    Python signature required. Its handler calls back into `SkillToolset.call`.
-2. We create one `Agent` over an `OpenAIChatClient` pointed at our Azure OpenAI
-   resource, stream a turn, and translate the framework's updates + our handler
-   callbacks into the same SSE event dicts every other engine emits.
+2. We construct a `GitHubCopilotAgent` with those tools and a BYOM `provider`, then
+   stream a turn, translating the framework's updates + our handler callbacks into
+   the same SSE event dicts every other engine emits.
 
-Auth + endpoint: keyless by default (DefaultAzureCredential / `az login`), same as
-Stage 1, pointed at the same `azure_endpoint`. (One repo wrinkle handled in
-`_get_client`: our `.env` uses an empty `AZURE_OPENAI_API_KEY` to mean "keyless",
-and the SDK reads that env var — an empty value poisons credential resolution, so
-we drop it before building the keyless client.)
+Auth: this engine needs *both* a logged-in Copilot user (the runtime still
+authenticates to GitHub to start) *and* Azure OpenAI for inference — keyless via
+`DefaultAzureCredential` (`az login`), same identity as Stage 1.
 
-Trade-off to notice (documented in docs/ENGINES.md): we get a managed loop, tool
-orchestration, and middleware for free, but give up the line-by-line visibility of
-Stage 1's loop — and progressive disclosure is now the framework's decision, not
-ours, so it may call a skill tool directly without first loading its instructions.
+Caveat (see `byom.py`): the Copilot SDK encrypts prompts, so only o-series and
+gpt-5 family Azure deployments work. `gpt-5.4-mini` does; `gpt-4o` does not.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 from collections.abc import AsyncIterator
 
 from app.engines.base import AgentEngine
+from app.engines.byom import azure_byom_provider, enhance_byom_error, make_bearer_token
 from app.models import ChatMessage, ContentEvent, DoneEvent, ErrorEvent, ToolCallEvent
 
 # Sentinel pushed onto the event queue when the agent turn finishes.
 _DONE = object()
 
-# Scope requested for keyless Azure OpenAI tokens (Cognitive Services).
-_AOAI_SCOPE = "https://cognitiveservices.azure.com/.default"
-
 
 class AgentFrameworkEngine(AgentEngine):
     id = "agent_framework"
-    label = "Microsoft Agent Framework"
+    label = "Agent Framework + Copilot SDK (BYOM)"
     description = (
-        "Microsoft Agent Framework owns the agentic loop; skills are exposed as "
-        "framework function tools built from the same schemas. Runs on your own "
-        "Azure OpenAI deployment (same model backend as the hand-rolled loop)."
+        "Microsoft Agent Framework owns the agentic loop and drives the GitHub "
+        "Copilot SDK runtime in Bring-Your-Own-Model mode — pointed at your own "
+        "Azure OpenAI deployment. Same skills as every engine, exposed as framework "
+        "function tools."
     )
 
     def __init__(self, settings, toolset) -> None:
@@ -61,12 +63,11 @@ class AgentFrameworkEngine(AgentEngine):
         self._import_error: str | None = None
         try:  # noqa: SIM105
             import agent_framework  # noqa: F401
-            from agent_framework.openai import OpenAIChatClient  # noqa: F401
+            from agent_framework.github import GitHubCopilotAgent  # noqa: F401
         except Exception as exc:  # pragma: no cover - env dependent
             self._import_error = str(exc)
-        # A lazily-built, reused chat client (it manages token refresh for us).
-        self._client = None
-        self._client_lock = asyncio.Lock()
+        # One token cache shared across turns (keyless BYOM path).
+        self._bearer = make_bearer_token()
 
     # ── Availability ────────────────────────────────────────────────────────
 
@@ -85,60 +86,10 @@ class AgentFrameworkEngine(AgentEngine):
             return (
                 "Azure OpenAI is not configured. Set AZURE_OPENAI_ENDPOINT and "
                 "AZURE_OPENAI_DEPLOYMENT in .env (auth is keyless via "
-                "DefaultAzureCredential — run `az login`)."
+                "DefaultAzureCredential — run `az login`). The Copilot runtime also "
+                "needs a logged-in Copilot user."
             )
         return None
-
-    # ── Chat client (built once, reused) ────────────────────────────────────
-
-    async def _get_client(self):
-        """Build the Agent Framework chat client once and reuse it.
-
-        This mirrors the simple, documented Agent Framework pattern:
-        `OpenAIChatClient(model=..., azure_endpoint=..., credential=...)`.
-
-        Two repo-specific wrinkles, both handled here:
-
-        * `OpenAIChatClient` is a *Responses API* client, which needs a recent API
-          version. We deliberately DON'T pass `api_version` so the SDK uses its
-          Responses-compatible default — pinning the older `2024-10-21` we use for
-          Stage 1's chat-completions path makes the Responses endpoint reject the
-          request ("API version not supported").
-        * Our `.env` sets an *empty* `AZURE_OPENAI_API_KEY` to signal keyless auth.
-          The SDK reads that env var, and an empty value poisons credential
-          resolution (it commits to key-auth, then fails with "Missing
-          credentials"). So when keyless we drop the blank var before building the
-          client. A real key is left untouched and used directly.
-        """
-        async with self._client_lock:
-            if self._client is not None:
-                return self._client
-
-            from agent_framework.openai import OpenAIChatClient
-
-            endpoint = self.settings.azure_openai_endpoint
-            model = self.settings.azure_openai_deployment
-
-            if self.settings.use_entra_auth:
-                from azure.identity import DefaultAzureCredential
-
-                # Drop the empty AZURE_OPENAI_API_KEY so the SDK takes the
-                # token-provider path instead of failing on a blank key.
-                if not os.environ.get("AZURE_OPENAI_API_KEY"):
-                    os.environ.pop("AZURE_OPENAI_API_KEY", None)
-                self._client = OpenAIChatClient(
-                    model=model,
-                    azure_endpoint=endpoint,
-                    credential=DefaultAzureCredential(),
-                )
-            else:
-                key = self.settings.azure_openai_api_key
-                self._client = OpenAIChatClient(
-                    model=model,
-                    azure_endpoint=endpoint,
-                    api_key=(lambda: key),
-                )
-            return self._client
 
     # ── Tools / instructions ────────────────────────────────────────────────
 
@@ -200,6 +151,31 @@ class AgentFrameworkEngine(AgentEngine):
             f"Available skills:\n{self.toolset.skill_catalogue()}"
         )
 
+    def _build_agent(self, tools):
+        """Construct a GitHubCopilotAgent with our skills + a BYOM provider.
+
+        `default_options` carries the BYOM `provider` (Copilot runtime → your Azure
+        OpenAI) and the deployment name as the wire `model`. We also approve tool
+        permissions: the Copilot runtime gates custom-tool execution behind a
+        permission request and *denies by default* if no handler is set, so without
+        this our skills would silently come back "permission denied". Entering the
+        returned async context manager spawns/owns the Copilot runtime.
+        """
+        from agent_framework.github import GitHubCopilotAgent
+        from copilot.session import PermissionHandler
+
+        return GitHubCopilotAgent(
+            instructions=self._instructions(),
+            tools=tools,
+            default_options={
+                "provider": azure_byom_provider(
+                    self.settings, bearer_token=self._bearer
+                ),
+                "model": self.settings.azure_openai_deployment,
+                "on_permission_request": PermissionHandler.approve_all,
+            },
+        )
+
     @staticmethod
     def _build_prompt(message: str, history: list[ChatMessage]) -> str:
         if not history:
@@ -227,33 +203,32 @@ class AgentFrameworkEngine(AgentEngine):
 
         queue: asyncio.Queue = asyncio.Queue()
         try:
-            client = await self._get_client()
             tools = self._build_tools(queue)
-            agent = client.as_agent(
-                name="skill-forge",
-                instructions=self._instructions(),
-                tools=tools,
-            )
-        except Exception as exc:  # client/agent failed to build
-            self._client = None
+            agent_cm = self._build_agent(tools)
+        except Exception as exc:  # agent failed to build
             yield ErrorEvent(message=f"Agent Framework setup failed: {exc}").model_dump()
             yield DoneEvent().model_dump()
             return
 
         prompt = self._build_prompt(message, history)
+        model = self.settings.azure_openai_deployment
 
         async def produce() -> None:
             # The framework owns the loop: it streams text and, mid-stream, awaits
             # our tool handlers (which enqueue their own tool_call events). Running
-            # this in a task lets run() drain a single ordered queue.
+            # this in a task lets run() drain a single ordered queue. Entering the
+            # agent context manager spawns the Copilot runtime for this turn.
             try:
-                async for update in agent.run(prompt, stream=True):
-                    text = getattr(update, "text", None)
-                    if text:
-                        queue.put_nowait(ContentEvent(text=text).model_dump())
+                async with agent_cm as agent:
+                    async for update in agent.run(prompt, stream=True):
+                        text = getattr(update, "text", None)
+                        if text:
+                            queue.put_nowait(ContentEvent(text=text).model_dump())
             except Exception as exc:
                 queue.put_nowait(
-                    ErrorEvent(message=f"Agent Framework error: {exc}").model_dump()
+                    ErrorEvent(
+                        message=f"Agent Framework error: {enhance_byom_error(model, exc)}"
+                    ).model_dump()
                 )
             finally:
                 queue.put_nowait(_DONE)
