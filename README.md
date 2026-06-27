@@ -6,19 +6,18 @@ A minimal, local-first chat app that demonstrates a simple **agentic-loop + swap
 > The single loop's LLM reasoning does all the routing — it decides which skill to use
 > each turn. New capabilities are added as **skill folders**, never as new agents.
 
-This is a deliberately small, readable implementation meant for learning the pattern —
-no avatar, no heavy Azure infra. The design was inspired by ideas in the
-[`aiappsgbb/kratos-agent`](https://github.com/aiappsgbb/kratos-agent) reference repo, but
-it's our own implementation from scratch: a FastAPI backend, a hand-rolled
-Reason → Act → Observe loop over Azure OpenAI (plus a pluggable engine layer so the
-same skills can run under other orchestrators — see [docs/ENGINES.md](docs/ENGINES.md)),
-and a one-file chat UI.
+This is a deliberately small, readable implementation meant for learning the pattern:
+a FastAPI backend, a **pluggable engine layer** so the *same* skills can run under
+several different orchestrators — from a hand-rolled Reason → Act → Observe loop to
+the GitHub Copilot SDK and Microsoft Agent Framework (see
+[docs/ENGINES.md](docs/ENGINES.md)) — and a one-file chat UI.
 
 > **New here?** Read **[docs/THE-PATTERN.md](docs/THE-PATTERN.md)** for a guided
 > explanation of how this differs from a plain function-calling agent, what
 > *progressive disclosure* is, and when the approach pays off. Then see
 > **[docs/ENGINES.md](docs/ENGINES.md)** for how the *same* skills run under
-> different orchestration engines (hand-rolled loop vs. GitHub Copilot SDK …).
+> different orchestration engines (hand-rolled loop, GitHub Copilot SDK, and
+> Agent Framework).
 
 ## The core idea
 
