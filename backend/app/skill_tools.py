@@ -144,7 +144,9 @@ class SkillToolset:
             return {"error": f"{name} failed: {exc}"}
 
     def _load_instructions(self, name: str) -> dict:
-        skill = self.registry.get(name)
+        # Tolerate the model passing the tool-name form (underscores) for a skill
+        # whose folder name uses hyphens, e.g. "web_grounding" -> "web-grounding".
+        skill = self.registry.get(name) or self.registry.get(name.replace("_", "-"))
         if skill is None or not skill.enabled:
             return {"error": f"No enabled skill named {name!r}."}
         return {

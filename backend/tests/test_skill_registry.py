@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.skill_registry import SkillRegistry, parse_frontmatter
+from app.skill_tools import SkillToolset
 
 
 def test_parse_frontmatter_extracts_fields_and_body() -> None:
@@ -66,3 +67,21 @@ def test_registry_ignores_dirs_without_skill_md(tmp_path: Path) -> None:
     (tmp_path / "not-a-skill" / "readme.txt").write_text("nope", encoding="utf-8")
     reg = SkillRegistry(tmp_path).load()
     assert reg.all() == []
+
+
+def test_load_instructions_tolerates_underscore_name(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "web-grounding",
+        "---\nname: web-grounding\ndescription: d\nenabled: true\n---\n\nbody",
+        with_tool=True,
+    )
+    toolset = SkillToolset(SkillRegistry(tmp_path).load()).build()
+
+    # Model passes the tool-name (underscore) form; should resolve to the hyphen skill.
+    res = toolset.call("load_skill_instructions", {"name": "web_grounding"})
+    assert res.get("name") == "web-grounding"
+    assert "error" not in res
+    # Exact hyphen name still works; an unknown name still errors.
+    assert toolset.call("load_skill_instructions", {"name": "web-grounding"})["name"] == "web-grounding"
+    assert "error" in toolset.call("load_skill_instructions", {"name": "nope"})
