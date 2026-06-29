@@ -142,6 +142,15 @@ class CopilotSdkEngine(AgentEngine):
             )
         return tools
 
+    def _extra_session_kwargs(self) -> dict:
+        """Extra `create_session` options. Base engine adds none.
+
+        Subclasses override this to inject session options without duplicating the
+        run loop — e.g. the BYOM engine returns a `provider` config pointing the
+        runtime at your own Azure OpenAI deployment.
+        """
+        return {}
+
     def _tool_allowlist(self):
         """Restrict the session to ONLY our skill tools.
 
@@ -201,7 +210,7 @@ class CopilotSdkEngine(AgentEngine):
 
         try:
             client = await self._get_client()
-            session = await client.create_session(
+            session_kwargs = dict(
                 model=self._model,
                 on_permission_request=PermissionHandler.approve_all,
                 tools=tools,
@@ -209,6 +218,10 @@ class CopilotSdkEngine(AgentEngine):
                 streaming=True,
                 system_message={"mode": "append", "content": self._system_addendum()},
             )
+            # Hook for subclasses (e.g. BYOM) to add/override session options
+            # such as a custom `provider` pointed at your own Azure OpenAI.
+            session_kwargs.update(self._extra_session_kwargs())
+            session = await client.create_session(**session_kwargs)
         except Exception as exc:  # session/runtime failed to start
             self._reset_client()
             yield ErrorEvent(message=f"Copilot SDK session failed: {exc}").model_dump()

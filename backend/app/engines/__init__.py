@@ -8,16 +8,23 @@ automatically. The shared skills/tools and the SSE event contract stay the same.
 from __future__ import annotations
 
 from app.config import Settings
+from app.engines.agent_framework import AgentFrameworkEngine
 from app.engines.base import AgentEngine
 from app.engines.copilot_sdk import CopilotSdkEngine
+from app.engines.copilot_sdk_byom import CopilotSdkByomEngine
 from app.engines.handrolled import HandRolledEngine
 from app.skill_tools import SkillToolset
 
-# Ordered: first = default. New engines (copilot_sdk, agent_framework, foundry)
-# get appended here as we build them.
+# Ordered: first = default. Engines show up in the API + UI selector in this order.
+#   Stage 1  handrolled        — you own the loop, your Azure OpenAI
+#   Stage 2  copilot_sdk       — Copilot runtime owns the loop, Copilot models
+#   Stage 2b copilot_sdk_byom  — Copilot runtime owns the loop, your Azure OpenAI
+#   Stage 3  agent_framework   — Agent Framework loop ▸ Copilot SDK (BYOM) ▸ your model
 ENGINE_CLASSES: list[type[AgentEngine]] = [
     HandRolledEngine,
     CopilotSdkEngine,
+    CopilotSdkByomEngine,
+    AgentFrameworkEngine,
 ]
 
 

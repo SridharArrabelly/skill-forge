@@ -6,19 +6,18 @@ A minimal, local-first chat app that demonstrates a simple **agentic-loop + swap
 > The single loop's LLM reasoning does all the routing — it decides which skill to use
 > each turn. New capabilities are added as **skill folders**, never as new agents.
 
-This is a deliberately small, readable implementation meant for learning the pattern —
-no avatar, no heavy Azure infra. The design was inspired by ideas in the
-[`aiappsgbb/kratos-agent`](https://github.com/aiappsgbb/kratos-agent) reference repo, but
-it's our own implementation from scratch: a FastAPI backend, a hand-rolled
-Reason → Act → Observe loop over Azure OpenAI (plus a pluggable engine layer so the
-same skills can run under other orchestrators — see [docs/ENGINES.md](docs/ENGINES.md)),
-and a one-file chat UI.
+This is a deliberately small, readable implementation meant for learning the pattern:
+a FastAPI backend, a **pluggable engine layer** so the *same* skills can run under
+several different orchestrators — from a hand-rolled Reason → Act → Observe loop to
+the GitHub Copilot SDK and Microsoft Agent Framework (see
+[docs/ENGINES.md](docs/ENGINES.md)) — and a one-file chat UI.
 
 > **New here?** Read **[docs/THE-PATTERN.md](docs/THE-PATTERN.md)** for a guided
 > explanation of how this differs from a plain function-calling agent, what
 > *progressive disclosure* is, and when the approach pays off. Then see
 > **[docs/ENGINES.md](docs/ENGINES.md)** for how the *same* skills run under
-> different orchestration engines (hand-rolled loop vs. GitHub Copilot SDK …).
+> different orchestration engines (hand-rolled loop, GitHub Copilot SDK, and
+> Agent Framework).
 
 ## The core idea
 
@@ -60,15 +59,17 @@ Conceptual parallels:
 
 ```
 User ─▶ web/index.html ──SSE──▶ /api/chat ─▶ engine (selected in the UI)
-                                                │
-                 ┌───────────────────────────────┴───────────────────────────────┐
-                 ▼                                                                 ▼
-   handrolled: our Reason→Act→Observe                       copilot_sdk: Copilot CLI runtime
-   loop over Azure OpenAI (agent.py)                        owns the loop (github-copilot-sdk)
-                 └───────────────────────────────┬───────────────────────────────┘
-                                                ▼
+                                               │
+   ┌──────────────────┬──────────────────┬─────┴────────────────┐
+   ▼                  ▼                  ▼                        ▼
+ handrolled        copilot_sdk      copilot_sdk_byom        agent_framework
+ you own the       Copilot runtime  Copilot runtime         Copilot runtime owns
+ loop (agent.py),  owns the loop,   owns the loop,          the loop; AF wraps it
+ your Azure OpenAI  Copilot models   your Azure OpenAI       (BYOM) your Azure OpenAI
+   └──────────────────┴──────────────────┴─────┬────────────────┘
+                                               ▼
                               the SAME skill tools (skill_tools.py)
-                                                │
+                                               │
                         ┌────────────────────────┴────────────────────────┐
                         ▼                                                  ▼
    skills/web-grounding/SKILL.md + tool.py            skills/rag-search/SKILL.md + tool.py
@@ -91,6 +92,9 @@ backend/app/
     base.py          #   AgentEngine ABC + shared SSE event contract
     handrolled.py    #   Stage 1: adapter over agent.py
     copilot_sdk.py   #   Stage 2: GitHub Copilot SDK (runtime owns the loop)
+    copilot_sdk_byom.py #  Stage 2b: Copilot SDK runtime loop, BYOM your Azure OpenAI
+    agent_framework.py #   Stage 3: Agent Framework wraps the Copilot SDK runtime loop (BYOM)
+    byom.py          #   shared Azure "Bring Your Own Model" provider config
     __init__.py      #   EngineRegistry + ENGINE_CLASSES (register new engines here)
   main.py            # FastAPI: /api/chat (SSE), /api/engines, /api/skills, serves UI
 skills/              # one folder per skill (SKILL.md [+ tool.py])
@@ -120,19 +124,32 @@ docs/ENGINES.md      # how the same skills run under different engines
    python backend/app/main.py          # or: uvicorn app.main:app --app-dir backend --reload
    ```
 3. Open http://localhost:8000 and chat. Use the **engine** selector (top-right) to
-   switch between the hand-rolled loop and the Copilot SDK, and watch the
-   skill-invocation chips to see which skill the loop decided to use.
+   switch between the hand-rolled loop, the Copilot SDK (Copilot models or BYOM), and
+   the Agent Framework, and watch the skill-invocation chips to see which skill the
+   loop decided to use.
 
-   **Optional — enable the GitHub Copilot SDK engine** (no Azure OpenAI needed; it
-   uses your logged-in Copilot account):
+   **Optional — enable the GitHub Copilot SDK engines** (Stage 2 + Stage 2b/3 share
+   the runtime):
    ```powershell
    pip install github-copilot-sdk      # already in requirements.txt
    python -m copilot download-runtime  # one-time: cache the runtime binary
-   # optional: choose a Copilot model (default gpt-5.4-mini)
+   gh auth login; gh auth refresh --scopes copilot   # the runtime authenticates as you
+   # optional (Stage 2 only): choose a Copilot model (default gpt-5.4-mini)
    # setx COPILOT_SDK_MODEL "claude-sonnet-4.5"
    ```
-   The engine appears in the dropdown automatically. If the SDK isn't installed,
-   the option shows as unavailable with the reason.
+   - **Copilot SDK** (Stage 2) runs on Copilot's hosted models — no Azure OpenAI needed.
+   - **Copilot SDK (BYOM)** (Stage 2b) and **Agent Framework + Copilot SDK (BYOM)**
+     (Stage 3) point the runtime at *your* Azure OpenAI, so they also need the
+     `AZURE_OPENAI_*` settings + `az login`. The BYOM model must be an **o-series or
+     gpt-5 family** deployment (the SDK encrypts prompts; `gpt-5.4-mini` works,
+     `gpt-4o` does not).
+
+   **Optional — enable the Agent Framework engine:**
+   ```powershell
+   pip install agent-framework          # already in requirements.txt
+   ```
+   Each engine appears in the dropdown automatically once its dependencies + settings
+   are present; otherwise the option shows as unavailable with the reason.
 
 > Note: use Python **3.12 or 3.13**. On 3.14 the pinned `pydantic-core` has no wheel yet
 > and would try (and fail) to build from Rust. `uv run` handles this for you.
@@ -158,9 +175,19 @@ skills behind the same event stream; only the loop changes:
 
 - **Hand-rolled ReAct loop** (default) → our own Reason → Act → Observe over Azure OpenAI.
 - **GitHub Copilot SDK** → the Copilot CLI runtime owns the loop; authenticates as your
-  logged-in Copilot user (no key, no Azure OpenAI) and runs on Copilot models. Requires
-  `pip install github-copilot-sdk` and `python -m copilot download-runtime`. Pick a model
+  logged-in Copilot user and runs on **Copilot's models** (no Azure OpenAI). Pick a model
   with `COPILOT_SDK_MODEL` (default `gpt-5.4-mini`).
+- **GitHub Copilot SDK (BYOM)** → the *same* Copilot runtime loop, but inference is routed
+  to **your own Azure OpenAI deployment** via a Bring-Your-Own-Model provider config. Clean
+  A/B against the previous engine: same loop, only the model swaps (and billing stays on
+  your Azure subscription).
+- **Agent Framework + Copilot SDK (BYOM)** → Microsoft Agent Framework wraps the **same
+  Copilot runtime loop as the engine above** (the runtime still owns the loop), in BYOM mode
+  on your Azure OpenAI. For a single agent it adds little over `copilot_sdk_byom`; the value
+  is future-facing — model portability behind one agent API and multi-agent orchestration.
 
-See **[docs/ENGINES.md](docs/ENGINES.md)** for the full comparison. More engines
-(Agent Framework, Foundry Agent Service) are planned.
+> The two BYOM engines need both a logged-in Copilot user *and* `AZURE_OPENAI_*` + `az login`,
+> and the deployment must be an o-series or gpt-5 family model (the SDK encrypts prompts).
+
+See **[docs/ENGINES.md](docs/ENGINES.md)** for the full comparison. The remaining engine
+(Foundry Agent Service) is planned.
