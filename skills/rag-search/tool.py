@@ -6,15 +6,21 @@ Tool contract (shared by every code-backed skill in skill-forge):
     run(**kwargs) -> Any # the callable the agent loop invokes
 
 Backend: Azure AI Search via the sync ``azure.search.documents.SearchClient``.
-We run a semantic query against an existing index and return the top passages.
+We run a **hybrid** query (BM25 keyword + vector similarity) with the semantic
+reranker on top, and return the top passages. The query vector is computed in-tool
+with Azure OpenAI embeddings; if embeddings aren't configured we fall back to a
+keyword + semantic search so the skill still works.
 Auth is keyless-first — leave AZURE_SEARCH_API_KEY blank to use
 DefaultAzureCredential (az login / managed identity).
 
 Env:
-    AZURE_SEARCH_ENDPOINT    e.g. https://<name>.search.windows.net
-    SEARCH_INDEX_NAME        the index to query
-    AZURE_SEARCH_API_KEY     optional; blank -> DefaultAzureCredential
-    SEARCH_SEMANTIC_CONFIG   semantic configuration name (default "mtn-semantic")
+    AZURE_SEARCH_ENDPOINT          e.g. https://<name>.search.windows.net
+    SEARCH_INDEX_NAME              the index to query
+    AZURE_SEARCH_API_KEY           optional; blank -> DefaultAzureCredential
+    SEARCH_SEMANTIC_CONFIG         semantic configuration name (default "zava-semantic")
+    AZURE_OPENAI_ENDPOINT          for query embeddings (hybrid vector search)
+    AZURE_OPENAI_EMBED_DEPLOYMENT  embeddings deployment (default text-embedding-3-small)
+    AZURE_OPENAI_API_VERSION       default 2024-10-21
 """
 
 from __future__ import annotations
@@ -42,7 +48,41 @@ TOOL: dict = {
 
 # Retrievable fields on the index (see the index schema). content_vector is
 # omitted on purpose — we return human-readable passages, not embeddings.
-_SELECT = ["title", "content", "source", "meeting_date", "chunk_index"]
+_SELECT = ["title", "content", "source", "page", "chunk_index"]
+
+
+def _embed_query(query: str) -> list[float] | None:
+    """Embed the query with Azure OpenAI (keyless-first). None if not configured/failed."""
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+    deployment = os.environ.get(
+        "AZURE_OPENAI_EMBED_DEPLOYMENT", "text-embedding-3-small"
+    ).strip()
+    if not (endpoint and deployment):
+        return None
+    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21").strip()
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
+    try:
+        from openai import AzureOpenAI
+
+        if api_key:
+            client = AzureOpenAI(
+                azure_endpoint=endpoint, api_key=api_key, api_version=api_version
+            )
+        else:
+            from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+            token_provider = get_bearer_token_provider(
+                DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
+            )
+            client = AzureOpenAI(
+                azure_endpoint=endpoint,
+                azure_ad_token_provider=token_provider,
+                api_version=api_version,
+            )
+        resp = client.embeddings.create(model=deployment, input=[query])
+        return resp.data[0].embedding
+    except Exception:  # noqa: BLE001 - degrade to keyword + semantic
+        return None
 
 
 def _build_client(endpoint: str, index: str):
@@ -78,18 +118,31 @@ def run(query: str = "", top: int = 3, **_: Any) -> dict:
             "results": [],
         }
 
-    semantic_config = os.environ.get("SEARCH_SEMANTIC_CONFIG", "mtn-semantic").strip()
+    semantic_config = os.environ.get("SEARCH_SEMANTIC_CONFIG", "zava-semantic").strip()
 
     try:
         client = _build_client(endpoint, index)
         try:
-            hits = client.search(
+            # Hybrid: keyword (search_text) + vector (content_vector) + semantic rerank.
+            search_kwargs: dict[str, Any] = dict(
                 search_text=query,
                 query_type="semantic",
                 semantic_configuration_name=semantic_config,
                 select=_SELECT,
                 top=top,
             )
+            query_vector = _embed_query(query)
+            if query_vector is not None:
+                from azure.search.documents.models import VectorizedQuery
+
+                search_kwargs["vector_queries"] = [
+                    VectorizedQuery(
+                        vector=query_vector,
+                        k=top,
+                        fields="content_vector",
+                    )
+                ]
+            hits = client.search(**search_kwargs)
             results = []
             for h in hits:
                 results.append(
@@ -97,7 +150,7 @@ def run(query: str = "", top: int = 3, **_: Any) -> dict:
                         "title": h.get("title", ""),
                         "content": h.get("content", ""),
                         "source": h.get("source", ""),
-                        "meeting_date": str(h.get("meeting_date", "") or ""),
+                        "page": h.get("page"),
                         "chunk_index": h.get("chunk_index"),
                         "score": h.get("@search.reranker_score")
                         or h.get("@search.score"),
