@@ -58,6 +58,20 @@ def _build_client():
     return WebIQClient(credential=DefaultAzureCredential())
 
 
+# Built once per process and reused. Constructing `DefaultAzureCredential` and
+# acquiring its first token probes the whole credential chain (IMDS timeout,
+# spawning `az`, …), which costs seconds. Rebuilding it on every skill call made
+# each invocation pay that cost even though the WebIQ search itself is sub-second.
+_CLIENT = None
+
+
+def _get_client():
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = _build_client()
+    return _CLIENT
+
+
 def run(query: str = "", max_results: int | None = None, **_: Any) -> dict:
     """Return web-grounding results for `query`.
 
@@ -76,19 +90,15 @@ def run(query: str = "", max_results: int | None = None, **_: Any) -> dict:
     try:
         from webiq.types import ContentFormat
 
-        client = _build_client()
-        try:
-            response = client.web.search(
-                query,
-                max_results=top,
-                language="en",
-                region=region,
-                content_format=ContentFormat.text,
-                max_length=max_length,
-            )
-        finally:
-            if hasattr(client, "close"):
-                client.close()
+        client = _get_client()
+        response = client.web.search(
+            query,
+            max_results=top,
+            language="en",
+            region=region,
+            content_format=ContentFormat.text,
+            max_length=max_length,
+        )
     except Exception as exc:  # noqa: BLE001 - surface, don't crash the loop
         return {
             "query": query,

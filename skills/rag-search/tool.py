@@ -51,6 +51,36 @@ TOOL: dict = {
 _SELECT = ["title", "content", "source", "page", "chunk_index"]
 
 
+_EMBED_CLIENT = None
+_EMBED_UNAVAILABLE = False
+
+
+def _get_embed_client(endpoint: str, api_version: str):
+    """Cached Azure OpenAI client for query embeddings (keyless-first)."""
+    global _EMBED_CLIENT, _EMBED_UNAVAILABLE
+    if _EMBED_CLIENT is not None or _EMBED_UNAVAILABLE:
+        return _EMBED_CLIENT
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
+    from openai import AzureOpenAI
+
+    if api_key:
+        _EMBED_CLIENT = AzureOpenAI(
+            azure_endpoint=endpoint, api_key=api_key, api_version=api_version
+        )
+    else:
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+        token_provider = get_bearer_token_provider(
+            DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
+        )
+        _EMBED_CLIENT = AzureOpenAI(
+            azure_endpoint=endpoint,
+            azure_ad_token_provider=token_provider,
+            api_version=api_version,
+        )
+    return _EMBED_CLIENT
+
+
 def _embed_query(query: str) -> list[float] | None:
     """Embed the query with Azure OpenAI (keyless-first). None if not configured/failed."""
     endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
@@ -60,29 +90,19 @@ def _embed_query(query: str) -> list[float] | None:
     if not (endpoint and deployment):
         return None
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21").strip()
-    api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
     try:
-        from openai import AzureOpenAI
-
-        if api_key:
-            client = AzureOpenAI(
-                azure_endpoint=endpoint, api_key=api_key, api_version=api_version
-            )
-        else:
-            from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-
-            token_provider = get_bearer_token_provider(
-                DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
-            )
-            client = AzureOpenAI(
-                azure_endpoint=endpoint,
-                azure_ad_token_provider=token_provider,
-                api_version=api_version,
-            )
+        client = _get_embed_client(endpoint, api_version)
         resp = client.embeddings.create(model=deployment, input=[query])
         return resp.data[0].embedding
     except Exception:  # noqa: BLE001 - degrade to keyword + semantic
         return None
+
+
+# Built once per process and reused. Constructing `DefaultAzureCredential` and
+# acquiring its first token probes the whole credential chain (IMDS timeout,
+# spawning `az`, …), which costs seconds; rebuilding the search/embeddings
+# clients on every call made each skill invocation re-pay that setup cost.
+_SEARCH_CLIENT = None
 
 
 def _build_client(endpoint: str, index: str):
@@ -100,6 +120,13 @@ def _build_client(endpoint: str, index: str):
         credential = DefaultAzureCredential()
 
     return SearchClient(endpoint=endpoint, index_name=index, credential=credential)
+
+
+def _get_client(endpoint: str, index: str):
+    global _SEARCH_CLIENT
+    if _SEARCH_CLIENT is None:
+        _SEARCH_CLIENT = _build_client(endpoint, index)
+    return _SEARCH_CLIENT
 
 
 def run(query: str = "", top: int = 3, **_: Any) -> dict:
@@ -121,43 +148,40 @@ def run(query: str = "", top: int = 3, **_: Any) -> dict:
     semantic_config = os.environ.get("SEARCH_SEMANTIC_CONFIG", "zava-semantic").strip()
 
     try:
-        client = _build_client(endpoint, index)
-        try:
-            # Hybrid: keyword (search_text) + vector (content_vector) + semantic rerank.
-            search_kwargs: dict[str, Any] = dict(
-                search_text=query,
-                query_type="semantic",
-                semantic_configuration_name=semantic_config,
-                select=_SELECT,
-                top=top,
-            )
-            query_vector = _embed_query(query)
-            if query_vector is not None:
-                from azure.search.documents.models import VectorizedQuery
+        client = _get_client(endpoint, index)
+        # Hybrid: keyword (search_text) + vector (content_vector) + semantic rerank.
+        search_kwargs: dict[str, Any] = dict(
+            search_text=query,
+            query_type="semantic",
+            semantic_configuration_name=semantic_config,
+            select=_SELECT,
+            top=top,
+        )
+        query_vector = _embed_query(query)
+        if query_vector is not None:
+            from azure.search.documents.models import VectorizedQuery
 
-                search_kwargs["vector_queries"] = [
-                    VectorizedQuery(
-                        vector=query_vector,
-                        k=top,
-                        fields="content_vector",
-                    )
-                ]
-            hits = client.search(**search_kwargs)
-            results = []
-            for h in hits:
-                results.append(
-                    {
-                        "title": h.get("title", ""),
-                        "content": h.get("content", ""),
-                        "source": h.get("source", ""),
-                        "page": h.get("page"),
-                        "chunk_index": h.get("chunk_index"),
-                        "score": h.get("@search.reranker_score")
-                        or h.get("@search.score"),
-                    }
+            search_kwargs["vector_queries"] = [
+                VectorizedQuery(
+                    vector=query_vector,
+                    k=top,
+                    fields="content_vector",
                 )
-        finally:
-            client.close()
+            ]
+        hits = client.search(**search_kwargs)
+        results = []
+        for h in hits:
+            results.append(
+                {
+                    "title": h.get("title", ""),
+                    "content": h.get("content", ""),
+                    "source": h.get("source", ""),
+                    "page": h.get("page"),
+                    "chunk_index": h.get("chunk_index"),
+                    "score": h.get("@search.reranker_score")
+                    or h.get("@search.score"),
+                }
+            )
     except Exception as exc:  # noqa: BLE001 - surface, don't crash the loop
         return {
             "query": query,

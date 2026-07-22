@@ -81,6 +81,11 @@ class AgentFrameworkSkillsEngine(AgentEngine):
             from agent_framework.openai import OpenAIChatCompletionClient  # noqa: F401
         except Exception as exc:  # pragma: no cover - env dependent
             self._import_error = str(exc)
+        # Built once, reused across turns. `DefaultAzureCredential` probes a whole
+        # credential chain (IMDS timeout, `az` spawn, …) and acquiring a token
+        # costs ~3s; caching the client means that happens once per process and
+        # the token is then served from the credential's cache on later turns.
+        self._client = None
 
     # ── Availability ────────────────────────────────────────────────────────
 
@@ -104,6 +109,17 @@ class AgentFrameworkSkillsEngine(AgentEngine):
         return None
 
     # ── Chat client (MAF owns the loop; this is just the model backend) ───────
+
+    def _get_client(self):
+        """Return the cached chat client, building it on first use.
+
+        Reusing one client (and therefore one `DefaultAzureCredential`) across
+        turns avoids re-running the credential chain and re-acquiring an AAD token
+        on every message — the single biggest per-turn overhead we measured.
+        """
+        if self._client is None:
+            self._client = self._build_client()
+        return self._client
 
     def _build_client(self):
         """Build a chat-completions client pointed at your Azure OpenAI deployment.
@@ -205,7 +221,7 @@ class AgentFrameworkSkillsEngine(AgentEngine):
         from agent_framework import Agent
 
         return Agent(
-            client=self._build_client(),
+            client=self._get_client(),
             instructions=self._instructions(),
             tools=tools,
             context_providers=[skills_provider],
