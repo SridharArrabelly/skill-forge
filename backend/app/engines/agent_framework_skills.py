@@ -2,8 +2,8 @@
 
 Unlike every other engine here, this one has **Agent Framework own the agentic
 loop** — not our hand-rolled loop (Stage 1) and not the Copilot runtime (Stages 2
-and 2b). We build a native `Agent` over a chat client (`OpenAIChatClient` pointed
-at *your* Azure OpenAI) and let the framework run its own tool-calling loop.
+and 2b). We build a native `Agent` over a chat client (`OpenAIChatCompletionClient`
+pointed at *your* Azure OpenAI) and let the framework run its own tool-calling loop.
 
 What makes this stage distinct is that it consumes the **now-stable Agent Skills
 feature** (`agent_framework.SkillsProvider`) instead of our home-grown
@@ -78,7 +78,7 @@ class AgentFrameworkSkillsEngine(AgentEngine):
         try:  # noqa: SIM105
             import agent_framework  # noqa: F401
             from agent_framework import Agent, SkillsProvider  # noqa: F401
-            from agent_framework.openai import OpenAIChatClient  # noqa: F401
+            from agent_framework.openai import OpenAIChatCompletionClient  # noqa: F401
         except Exception as exc:  # pragma: no cover - env dependent
             self._import_error = str(exc)
 
@@ -106,12 +106,18 @@ class AgentFrameworkSkillsEngine(AgentEngine):
     # ── Chat client (MAF owns the loop; this is just the model backend) ───────
 
     def _build_client(self):
-        """Build an `OpenAIChatClient` pointed at your Azure OpenAI deployment.
+        """Build a chat-completions client pointed at your Azure OpenAI deployment.
+
+        We use `OpenAIChatCompletionClient` (the Chat Completions wire) rather than
+        `OpenAIChatClient` (which targets the Azure *Responses* API and needs a
+        `preview` api_version). This matches Stage 1's proven path exactly — same
+        endpoint, deployment, and `AZURE_OPENAI_API_VERSION` — so the Stage 1 vs.
+        Stage 3 comparison isolates *only* the loop owner, not the wire API.
 
         Keyless by default via `DefaultAzureCredential` (same `az login` identity
         as Stage 1); falls back to an API key when `AZURE_OPENAI_API_KEY` is set.
         """
-        from agent_framework.openai import OpenAIChatClient
+        from agent_framework.openai import OpenAIChatCompletionClient
 
         common = {
             "model": self.settings.azure_openai_deployment,
@@ -121,8 +127,8 @@ class AgentFrameworkSkillsEngine(AgentEngine):
         if self.settings.use_entra_auth:
             from azure.identity import DefaultAzureCredential
 
-            return OpenAIChatClient(credential=DefaultAzureCredential(), **common)
-        return OpenAIChatClient(api_key=self.settings.azure_openai_api_key, **common)
+            return OpenAIChatCompletionClient(credential=DefaultAzureCredential(), **common)
+        return OpenAIChatCompletionClient(api_key=self.settings.azure_openai_api_key, **common)
 
     # ── Tools / instructions ────────────────────────────────────────────────
 
