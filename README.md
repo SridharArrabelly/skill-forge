@@ -62,10 +62,10 @@ User ─▶ web/index.html ──SSE──▶ /api/chat ─▶ engine (selected 
                                                │
    ┌──────────────────┬──────────────────┬─────┴────────────────┐
    ▼                  ▼                  ▼                        ▼
- handrolled        copilot_sdk      copilot_sdk_byom        agent_framework
- you own the       Copilot runtime  Copilot runtime         Copilot runtime owns
- loop (agent.py),  owns the loop,   owns the loop,          the loop; AF wraps it
- your Azure OpenAI  Copilot models   your Azure OpenAI       (BYOM) your Azure OpenAI
+ handrolled        copilot_sdk      copilot_sdk_byom        agent_framework_skills
+ you own the       Copilot runtime  Copilot runtime         Agent Framework owns
+ loop (agent.py),  owns the loop,   owns the loop,          the loop; GA Agent
+ your Azure OpenAI  Copilot models   your Azure OpenAI       Skills, your Azure OpenAI
    └──────────────────┴──────────────────┴─────┬────────────────┘
                                                ▼
                               the SAME skill tools (skill_tools.py)
@@ -93,7 +93,7 @@ backend/app/
     handrolled.py    #   Stage 1: adapter over agent.py
     copilot_sdk.py   #   Stage 2: GitHub Copilot SDK (runtime owns the loop)
     copilot_sdk_byom.py #  Stage 2b: Copilot SDK runtime loop, BYOM your Azure OpenAI
-    agent_framework.py #   Stage 3: Agent Framework wraps the Copilot SDK runtime loop (BYOM)
+    agent_framework_skills.py # Stage 3: Agent Framework owns the loop + GA Agent Skills
     byom.py          #   shared Azure "Bring Your Own Model" provider config
     __init__.py      #   EngineRegistry + ENGINE_CLASSES (register new engines here)
   main.py            # FastAPI: /api/chat (SSE), /api/engines, /api/skills, serves UI
@@ -128,7 +128,7 @@ docs/ENGINES.md      # how the same skills run under different engines
    the Agent Framework, and watch the skill-invocation chips to see which skill the
    loop decided to use.
 
-   **Optional — enable the GitHub Copilot SDK engines** (Stage 2 + Stage 2b/3 share
+   **Optional — enable the GitHub Copilot SDK engines** (Stage 2 + Stage 2b share
    the runtime):
    ```powershell
    pip install github-copilot-sdk      # already in requirements.txt
@@ -138,18 +138,20 @@ docs/ENGINES.md      # how the same skills run under different engines
    # setx COPILOT_SDK_MODEL "claude-sonnet-4.5"
    ```
    - **Copilot SDK** (Stage 2) runs on Copilot's hosted models — no Azure OpenAI needed.
-   - **Copilot SDK (BYOM)** (Stage 2b) and **Agent Framework + Copilot SDK (BYOM)**
-     (Stage 3) point the runtime at *your* Azure OpenAI, so they also need the
-     `AZURE_OPENAI_*` settings + `az login`. The BYOM model must be an **o-series or
-     gpt-5 family** deployment (the SDK encrypts prompts; `gpt-5.4-mini` works,
-     `gpt-4o` does not).
+   - **Copilot SDK (BYOM)** (Stage 2b) points the runtime at *your* Azure OpenAI, so it
+     also needs the `AZURE_OPENAI_*` settings + `az login`. The BYOM model must be an
+     **o-series or gpt-5 family** deployment (the SDK encrypts prompts; `gpt-5.4-mini`
+     works, `gpt-4o` does not).
 
-   **Optional — enable the Agent Framework engine:**
+   **Optional — enable the Agent Framework engine (Stage 3):**
    ```powershell
    pip install agent-framework          # already in requirements.txt
    ```
-   Each engine appears in the dropdown automatically once its dependencies + settings
-   are present; otherwise the option shows as unavailable with the reason.
+   Stage 3 (**Agent Framework + Agent Skills**) talks to *your* Azure OpenAI directly, so
+   it needs only the `AZURE_OPENAI_*` settings + `az login` — no Copilot user, and **any**
+   chat deployment works (including `gpt-4o`). Each engine appears in the dropdown
+   automatically once its dependencies + settings are present; otherwise the option shows
+   as unavailable with the reason.
 
 > Note: use Python **3.12 or 3.13**. On 3.14 the pinned `pydantic-core` has no wheel yet
 > and would try (and fail) to build from Rust. `uv run` handles this for you.
@@ -181,13 +183,16 @@ skills behind the same event stream; only the loop changes:
   to **your own Azure OpenAI deployment** via a Bring-Your-Own-Model provider config. Clean
   A/B against the previous engine: same loop, only the model swaps (and billing stays on
   your Azure subscription).
-- **Agent Framework + Copilot SDK (BYOM)** → Microsoft Agent Framework wraps the **same
-  Copilot runtime loop as the engine above** (the runtime still owns the loop), in BYOM mode
-  on your Azure OpenAI. For a single agent it adds little over `copilot_sdk_byom`; the value
-  is future-facing — model portability behind one agent API and multi-agent orchestration.
+- **Agent Framework + Agent Skills** → Microsoft **Agent Framework owns the loop** via a
+  native `Agent` over your Azure OpenAI, and loads the *same* skill folders through the
+  now-GA `SkillsProvider` (native `load_skill` / `read_skill_resource` progressive
+  disclosure) instead of our synthetic tool. No Copilot runtime and no prompt encryption,
+  so **any** Azure deployment works (including `gpt-4o`). This is the cleanest hand-rolled
+  vs. framework-managed loop A/B against Stage 1, on the same model.
 
-> The two BYOM engines need both a logged-in Copilot user *and* `AZURE_OPENAI_*` + `az login`,
-> and the deployment must be an o-series or gpt-5 family model (the SDK encrypts prompts).
+> **Stage 2b** needs both a logged-in Copilot user *and* `AZURE_OPENAI_*` + `az login`, and
+> its deployment must be an o-series or gpt-5 family model (the SDK encrypts prompts).
+> **Stage 3** needs only `AZURE_OPENAI_*` + `az login`.
 
 See **[docs/ENGINES.md](docs/ENGINES.md)** for the full comparison. The remaining engine
 (Foundry Agent Service) is planned.

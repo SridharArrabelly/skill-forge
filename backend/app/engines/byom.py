@@ -1,10 +1,11 @@
 """Shared Azure "Bring Your Own Model" (BYOM) provider config.
 
-Both BYOM engines — Stage 2b (`copilot_sdk_byom`) and the reworked Stage 3
-(`agent_framework`, now backed by the Copilot SDK) — route the Copilot runtime at
-*your* Azure OpenAI deployment instead of GitHub's hosted models. The runtime
-takes a `provider` config (a `copilot.session.ProviderConfig` TypedDict); this
-module builds that dict once so the two engines share exactly one recipe.
+Stage 2b (`copilot_sdk_byom`) routes the Copilot runtime at *your* Azure OpenAI
+deployment instead of GitHub's hosted models. The runtime takes a `provider`
+config (a `copilot.session.ProviderConfig` TypedDict); this module builds that
+dict once so the engine has a single, tested recipe. (Stage 3, the Agent
+Framework engine, no longer uses this — it talks to Azure OpenAI directly through
+a native chat client, so it has no encrypted-content constraint.)
 
 Why keyless works the same as everywhere else: we hand the runtime a
 `get_bearer_token` callback that mints an Azure AD token via

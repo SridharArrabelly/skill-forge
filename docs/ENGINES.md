@@ -13,25 +13,31 @@ This doc grows one section per engine as we build them.
             you own the loop  ───────────────────────────────►  fully managed
   Stage 1        Stage 2          Stage 2b            Stage 3            Stage 4
  Hand-rolled   Copilot SDK     Copilot SDK (BYOM)  Agent Framework   Foundry Agent
- ReAct loop    runtime loop    runtime loop        wraps the same    Service
- your AOAI     Copilot models  your AOAI (BYOM)    runtime loop      (planned)
-                                                   (BYOM) your AOAI
+ ReAct loop    runtime loop    runtime loop        owns the loop     Service
+ your AOAI     Copilot models  your AOAI (BYOM)    + GA Agent Skills (planned)
+                                                   your AOAI
 ```
 
 The two axes this project teaches: **who owns the loop** and **whose model runs
 underneath** (Copilot-hosted vs. your own Azure OpenAI, "BYOM").
 
-- **Who owns the tool-calling loop:** Stage 1 = *you*. Stages 2, 2b **and 3** all run
-  on the **Copilot runtime's** loop — Agent Framework (Stage 3) is a *wrapper around*
-  that loop, not a second loop (see the Stage 3 section). Stage 4 = a hosted service.
+- **Who owns the tool-calling loop:** Stage 1 = *you* (hand-rolled). Stages 2 and 2b run
+  on the **Copilot runtime's** loop. Stage 3 = **Agent Framework** runs its own loop over
+  a chat client (it is *not* a wrapper around the Copilot runtime — see the Stage 3
+  section). Stage 4 = a hosted service.
 - **Whose model:** Copilot-hosted (Stage 2) vs. your own Azure OpenAI (Stages 1, 2b, 3).
+- **How skills are surfaced:** Stages 1, 2, 2b use our own synthetic
+  `load_skill_instructions` tool for progressive disclosure. Stage 3 uses the **GA
+  `SkillsProvider`** — the framework's native `load_skill` / `read_skill_resource`
+  tools over the *same* `skills/` folders.
 
 Clean A/B comparisons this enables:
 - **Stage 2 vs. 2b** isolates *just the model backend* (same Copilot loop).
 - **Stage 1 vs. 2b** isolates *just the loop owner* (same Azure OpenAI model — you own
   the loop vs. the Copilot runtime owns it).
-- **Stage 2b vs. 3** isolates *just the framework wrapper* — **same loop owner, same
-  model**. It shows what Agent Framework adds (and, for a single agent, how little).
+- **Stage 1 vs. 3** isolates *your loop vs. a framework-managed loop* on the **same
+  Azure OpenAI model** — and *our* skills plumbing vs. the **first-party Agent Skills**
+  feature doing the same progressive-disclosure job.
 
 ---
 
@@ -140,109 +146,102 @@ Things worth knowing:
 
 ---
 
-## Stage 3 — Agent Framework over the Copilot SDK, BYOM (`agent_framework`)
+## Stage 3 — Agent Framework + GA Agent Skills (`agent_framework_skills`)
 
-**File:** `app/engines/agent_framework.py`. Packages: `agent-framework`
-(`from agent_framework import FunctionTool`, `from agent_framework.github import
-GitHubCopilotAgent`) + the GitHub Copilot SDK.
+**File:** `app/engines/agent_framework_skills.py`. Package: `agent-framework`
+(`from agent_framework import Agent, SkillsProvider, FunctionTool`,
+`from agent_framework.openai import OpenAIChatClient`).
 
-This stage runs the **same Copilot runtime loop as Stage 2b**, but reaches it through
-**Microsoft Agent Framework** instead of the raw SDK. Two things are true at once, and
-getting them straight is the whole point of this stage:
+This stage is the one place where **Microsoft Agent Framework owns the agentic
+loop** — not our hand-rolled loop, and not the Copilot runtime. We build a native
+`Agent` over an `OpenAIChatClient` pointed at *your* Azure OpenAI, and the
+framework runs its own tool-calling loop. Two ideas define the stage:
 
-- **The Copilot SDK runtime still owns the agentic loop.** Agent Framework does **not**
-  hand-write or run a Reason → Act → Observe loop here. Its `GitHubCopilotAgent`
-  converts your tools to Copilot SDK tools, hands them to `create_session(...)`, and
-  then just **reads the runtime's event stream and re-emits it** as framework events.
-  The library says so itself — from `agent_framework_github_copilot/_agent.py`:
+- **Agent Framework runs the loop.** `Agent(client=..., tools=..., context_providers=...)`
+  drives the model, executes tool calls, feeds results back, and streams the answer —
+  the same job `app/agent.py` does by hand in Stage 1, but managed by the framework. No
+  Copilot runtime is involved.
+- **Skills come from the now-stable Agent Skills feature.** Instead of our synthetic
+  `load_skill_instructions` tool, we attach
+  [`SkillsProvider`](https://learn.microsoft.com/en-us/agent-framework/agents/skills?pivots=programming-language-python)
+  as a `context_providers=[...]` entry. Before each run it discovers the **same**
+  `skills/` folders (via `SkillsProvider.from_paths`), injects an *advertise* system
+  prompt of skill names + descriptions, and adds the framework's native `load_skill`,
+  `read_skill_resource`, and `run_skill_script` tools — the four-stage
+  progressive-disclosure pattern, first-party.
 
-  > *"The Copilot CLI manages its own tool-calling loop, so the framework cannot
-  > round-trip a `FunctionApprovalRequestContent` / `FunctionApprovalResponseContent`
-  > pair the way the standard chat-client pipeline does."*
+  ```python
+  skills_provider = SkillsProvider.from_paths(
+      skill_paths=str(settings.skills_path),
+      disable_load_skill_approval=True,          # read-only → run unattended
+      disable_read_skill_resource_approval=True, # read-only → run unattended
+  )                                              # run_skill_script keeps its approval gate
+  agent = Agent(client=OpenAIChatClient(...), tools=[...], context_providers=[skills_provider])
+  ```
 
-- **The GitHub Copilot SDK is the model backend, in BYOM mode** — `GitHubCopilotAgent`
-  drives the Copilot runtime, which we point at **your own Azure OpenAI deployment**
-  via the *same* `provider` config Stage 2b uses.
+How the two tool layers fit together (and why nothing is duplicated):
 
-So the stack is: **Agent Framework (wrapper) ▸ Copilot SDK runtime (owns the loop) ▸
-your Azure OpenAI.** Compared to Stage 2b, the *only* thing that changes is the
-**surface you program against**, not who runs the loop or which model answers. (This
-mirrors the
-[Agent Framework + Copilot SDK](https://devblogs.microsoft.com/agent-framework/build-ai-agents-with-github-copilot-sdk-and-microsoft-agent-framework/)
-pattern from the user's `agent-framework-sdk-lab`, with a BYOM `provider` added.)
-
-How it reuses the shared layer with zero duplication:
-
-1. Each entry from `SkillToolset.openai_tools()` becomes a framework `FunctionTool`
-   built from an **explicit JSON schema** — `FunctionTool(name=..., description=...,
-   input_model=<json-schema dict>, func=handler)`. No typed Python signature is
-   required, so the model sees the *same* tools (`rag_search`, `web_grounding`,
-   `load_skill_instructions`) as every other engine. Each handler calls straight
-   back into `SkillToolset.call(...)`.
-2. We construct one `GitHubCopilotAgent` with those tools and the BYOM `provider`,
-   stream a turn with `agent.run(prompt, stream=True)`, and translate the streamed
-   text plus our handler callbacks into the shared SSE events.
+1. **Instructions + resources** are served by the provider natively. `load_skill`
+   returns a skill's `SKILL.md` body; `read_skill_resource` serves bundled reference
+   files under `references/` or `assets/`. Our SKILL.md folders already satisfy MAF's
+   agentskills.io parser (frontmatter `name` must equal the folder name — ours do; the
+   extra `enabled` key is ignored).
+2. **Callable capabilities** (`web_grounding`, `rag_search`) stay our code-backed
+   `tool.py` functions, exposed here as framework `FunctionTool`s built from the shared
+   `SkillToolset` — byte-for-byte the same callables every other engine runs. We
+   deliberately **drop** our `load_skill_instructions` tool here because the provider's
+   `load_skill` replaces it.
 
 The headline differences from Stage 1:
 
-- **Who owns the loop:** the **Copilot runtime** (not the framework, and not you).
-  Stage 1 you can read line-by-line in `app/agent.py`; here the loop lives inside the
-  runtime and Agent Framework only wraps it. Same as Stage 2b on this axis.
-- **Same model, doubled auth:** your Azure OpenAI deployment (keyless,
-  `DefaultAzureCredential`) — *plus* a logged-in Copilot user, since the runtime
-  still authenticates to GitHub to start.
+- **Who owns the loop:** **Agent Framework** (not you, not the Copilot runtime). Stage 1
+  you read line-by-line in `app/agent.py`; here the same Reason → Act → Observe cycle is
+  managed by `agent.run(...)`. This is the cleanest "hand-rolled vs. framework-managed
+  loop" A/B in the project, on the *same* Azure OpenAI model.
+- **How skills are surfaced:** the **first-party** `SkillsProvider` (`load_skill` /
+  `read_skill_resource`) instead of our synthetic `load_skill_instructions`.
 
-**What does Agent Framework actually buy you here?** For a *single* agent like
-skill-forge — honestly, very little today. It's a near pass-through over the same
-Stage-2b runtime loop, so you pay one extra abstraction layer for no functional gain.
-The value is **future-facing**, and that's the reason to learn it:
+**Auth & model — simpler than 2b.** Only Azure OpenAI is needed — keyless via
+`DefaultAzureCredential` (`az login`), the same identity Stage 1 uses, or an API key if
+set. There is **no Copilot user and no prompt encryption**, so — unlike Stages 2b — **any
+chat-capable deployment works, including `gpt-4o`.**
 
-- **Model portability behind one agent API.** Swap the Copilot SDK backend for
-  `OpenAIChatClient`, Azure AI Foundry, Anthropic, etc. without rewriting the engine —
-  `agent.run(...)` stays the same.
-- **Multi-agent orchestration.** Compose several agents (handoffs, parallel agents,
-  shared threads) — the `07_multi_agent_workflow.py` pattern from the lab. This is the
-  payoff the framework exists for; a one-agent app simply doesn't exercise it yet.
-- **Middleware, typed sessions, observability/eval hooks** that you'd otherwise
-  hand-roll.
+**Governance you get for free.** The provider's three tools are approval-gated by
+default. We disable approval on the read-only `load_skill` / `read_skill_resource` so the
+demo runs unattended, and leave `run_skill_script` gated (our skills ship no scripts, so
+it is never usefully invoked — but the safe default stays visible). In production you'd
+keep the gate on and wire a human-in-the-loop handler, plus per-agent/tenant filtering
+and caching, all of which the provider supports.
 
-In other words: Stage 3 isn't "more managed than Stage 2b." It's Stage 2b's loop with
-a **framework surface** on top — bet on it when you expect to grow past one agent or
-need to keep your model choices open, not for single-agent throughput.
+**What Agent Framework buys you here.** A genuinely managed loop (you delete Stage 1's
+~170 lines), plus the future-facing payoffs: **model portability** behind one agent API
+(swap `OpenAIChatClient` for Foundry, Anthropic, etc. without touching the engine),
+**multi-agent orchestration**, middleware, typed sessions, and observability/eval hooks —
+and now a **standard, governed skills format** you author once and reuse across agents.
 
-**Progressive disclosure survives — even through a framework wrapper on a BYOM backend.**
-Verified end-to-end: the model called `load_skill_instructions("rag-search")` and
-*then* answered from the skill — the same Stage-1 pattern, no special prompting.
-
-**Two gotchas worth knowing** (both handled in the engine):
-
-- **Custom tools are permission-gated.** The Copilot runtime gates custom-tool
-  execution behind a permission request and **denies by default** if no handler is
-  set — so without intervention our skills silently come back *"permission denied"*
-  and the model gives up. The engine passes `on_permission_request:
-  PermissionHandler.approve_all` in `default_options` to approve them. (This took a
-  live debug session to pin down — the failure looks like the model "refusing,"
-  not a config error.)
-- **Encrypted-content constraint** — same as Stage 2b: o-series / gpt-5 family only.
+**Note on chips:** the UI's skill chips are emitted from our `FunctionTool` handlers, so
+`web_grounding` / `rag_search` calls show up live. The provider's native `load_skill` /
+`read_skill_resource` run transparently inside the framework and are not surfaced as
+chips.
 
 ---
 
 ## Side-by-side
 
-| Dimension              | Stage 1 — Hand-rolled            | Stage 2 — Copilot SDK                    | Stage 2b — Copilot SDK (BYOM)            | Stage 3 — Agent Framework + Copilot SDK (BYOM) |
+| Dimension              | Stage 1 — Hand-rolled            | Stage 2 — Copilot SDK                    | Stage 2b — Copilot SDK (BYOM)            | Stage 3 — Agent Framework + Agent Skills |
 | ---------------------- | -------------------------------- | ---------------------------------------- | ---------------------------------------- | ---------------------------------------- |
-| Who owns the loop      | **You** (`app/agent.py`)         | Copilot CLI **runtime**                  | Copilot CLI **runtime**                  | Copilot CLI **runtime** (AF only wraps it) |
-| Loop code to maintain  | ~170 lines, fully visible        | ~0 (event translation only)              | ~0 (subclass adds ~1 option)             | ~0 (event translation only)              |
-| Model / provider       | Your Azure OpenAI deployment     | Copilot models (gpt-5.x, claude, gemini) | **Your Azure OpenAI** (BYOM)             | **Your Azure OpenAI** (BYOM)             |
-| Auth                   | `DefaultAzureCredential` (keyless)| Logged-in Copilot user (no key)         | Copilot user **+** keyless Azure         | Copilot user **+** keyless Azure         |
-| Tool registration      | OpenAI `tools=[]` from skills    | SDK `Tool(...)` from the **same** skills | SDK `Tool(...)` from the **same** skills | `FunctionTool(...)` from the **same** skills |
-| Progressive disclosure | Yes (built in)                   | Yes (carries over)                       | Yes (carries over)                       | Yes (verified)                           |
-| Tool selection control | Full — only your tools exist   | Full — `available_tools` allowlist     | Full — `available_tools` allowlist     | Tools approved via `on_permission_request` |
-| Model constraint       | Any Azure deployment             | Any Copilot model                        | **o-series / gpt-5 only** (encryption)   | **o-series / gpt-5 only** (encryption)   |
+| Who owns the loop      | **You** (`app/agent.py`)         | Copilot CLI **runtime**                  | Copilot CLI **runtime**                  | **Agent Framework** (native `Agent`)     |
+| Loop code to maintain  | ~170 lines, fully visible        | ~0 (event translation only)              | ~0 (subclass adds ~1 option)             | ~0 (framework runs it)                   |
+| Model / provider       | Your Azure OpenAI deployment     | Copilot models (gpt-5.x, claude, gemini) | **Your Azure OpenAI** (BYOM)             | **Your Azure OpenAI** (direct)           |
+| Auth                   | `DefaultAzureCredential` (keyless)| Logged-in Copilot user (no key)         | Copilot user **+** keyless Azure         | Keyless Azure only (or API key)          |
+| Tool registration      | OpenAI `tools=[]` from skills    | SDK `Tool(...)` from the **same** skills | SDK `Tool(...)` from the **same** skills | `FunctionTool(...)` + GA `SkillsProvider` |
+| Progressive disclosure | Ours (`load_skill_instructions`) | Ours (carries over)                      | Ours (carries over)                      | **Native** `load_skill` / `read_skill_resource` |
+| Tool selection control | Full — only your tools exist   | Full — `available_tools` allowlist     | Full — `available_tools` allowlist     | Skill tools approval-gated (read-only opted out) |
+| Model constraint       | Any Azure deployment             | Any Copilot model                        | **o-series / gpt-5 only** (encryption)   | **Any Azure deployment** (incl. gpt-4o)  |
 | Streaming              | Per-chunk content events         | `assistant.message_delta` → content      | `assistant.message_delta` → content      | `agent.run(stream=True)` updates → content |
-| Extras you get free    | None                             | Compaction, session persistence          | Compaction, session persistence          | Model portability, multi-agent, middleware |
-| Hosting / dependency   | OpenAI SDK + Azure endpoint      | Bundled Copilot runtime binary           | Copilot runtime + Azure endpoint         | `agent-framework` + Copilot runtime + Azure |
-| Lock-in                | Low (any OpenAI-compatible API)  | Medium (Copilot platform + subscription) | Medium (Copilot runtime, your model)     | Medium (framework + Copilot runtime, your model) |
+| Extras you get free    | None                             | Compaction, session persistence          | Compaction, session persistence          | Managed loop, model portability, multi-agent, middleware, governed skills |
+| Hosting / dependency   | OpenAI SDK + Azure endpoint      | Bundled Copilot runtime binary           | Copilot runtime + Azure endpoint         | `agent-framework` + Azure endpoint       |
+| Lock-in                | Low (any OpenAI-compatible API)  | Medium (Copilot platform + subscription) | Medium (Copilot runtime, your model)     | Low–medium (framework; portable model backend) |
 
 **Rule of thumb:**
 - **Stage 1** when you need to *see and control* every step (debugging, custom
@@ -251,10 +250,10 @@ Verified end-to-end: the model called `load_skill_instructions("rag-search")` an
   Copilot — happy to run on Copilot's models.
 - **Stage 2b** when you want that same managed Copilot loop but need inference on
   **your own Azure OpenAI** (data residency, billing, a specific deployment).
-- **Stage 3** when you expect to **grow past one agent** (multi-agent workflows) or want
-  **model portability** behind one agent API — Agent Framework conveniences (middleware,
-  typed sessions) layered over the *same* Copilot runtime loop as 2b, on your own model.
-  For a single agent it adds little over Stage 2b; the value is future-facing.
+- **Stage 3** when you want a **framework-managed loop on your own Azure OpenAI** with a
+  **standard, governed skills format** (approval, filtering, caching) and room to grow
+  into **multi-agent** workflows or swap model backends — without the Copilot runtime or
+  its encrypted-content constraint.
 
 ---
 
