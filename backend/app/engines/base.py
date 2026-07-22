@@ -57,6 +57,16 @@ class AgentEngine(ABC):
         """Run one user turn, yielding SSE event dicts until a `done` event."""
         raise NotImplementedError
 
+    async def warmup(self) -> None:
+        """Best-effort, one-time priming so the *first* real turn isn't cold.
+
+        Default is a no-op. Engines that pay a large one-time setup cost (e.g.
+        acquiring an AAD token via `DefaultAzureCredential` and opening the first
+        HTTP connection) override this to do that work at startup instead of on
+        the user's first message. Must never raise.
+        """
+        return None
+
     def info(self) -> dict:
         """Metadata for the `/api/engines` listing."""
         return {

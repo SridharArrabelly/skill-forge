@@ -121,6 +121,27 @@ class AgentFrameworkSkillsEngine(AgentEngine):
             self._client = self._build_client()
         return self._client
 
+    async def warmup(self) -> None:
+        """Prime the client, AAD token, and first HTTP connection at startup.
+
+        The first turn otherwise pays a one-time cost (~seconds): building
+        `DefaultAzureCredential`, probing its chain, acquiring a token, and
+        opening the first TLS connection. We do a tiny throwaway completion here
+        — no tools, no SkillsProvider — so the user's first *real* message is
+        already warm. Best-effort: any failure is swallowed and surfaced later
+        by the real turn instead.
+        """
+        if not self.available:
+            return
+        try:
+            from agent_framework import Agent
+
+            agent = Agent(client=self._get_client(), instructions="Reply with: ok")
+            async for _ in agent.run("ping", stream=True):
+                pass
+        except Exception:  # noqa: BLE001 - warmup must never break startup
+            pass
+
     def _build_client(self):
         """Build a chat-completions client pointed at your Azure OpenAI deployment.
 

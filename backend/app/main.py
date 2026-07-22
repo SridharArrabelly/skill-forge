@@ -47,6 +47,20 @@ _toolset = SkillToolset(_registry).build()
 _engines = EngineRegistry(_settings, _toolset)
 
 
+@app.on_event("startup")
+async def _warmup_engines() -> None:
+    """Prime engines in the background so the first user turn isn't cold.
+
+    Fire-and-forget: warmup is best-effort and must never delay or break startup,
+    so we schedule it as a task and return immediately.
+    """
+    import asyncio
+
+    for engine in _engines.all():
+        asyncio.create_task(engine.warmup())
+
+
+
 @app.get("/api/skills")
 def list_skills() -> JSONResponse:
     """Return the discovered skills so the UI can show what the agent can do."""
