@@ -9,13 +9,18 @@ you can switch engines from the dropdown and compare them apples-to-apples.
 
 This doc grows one section per engine as we build them.
 
-```
-            you own the loop  ───────────────────────────────►  fully managed
-  Stage 1        Stage 2          Stage 2b            Stage 3            Stage 4
- Hand-rolled   Copilot SDK     Copilot SDK (BYOM)  Agent Framework   Foundry Agent
- ReAct loop    runtime loop    runtime loop        owns the loop     Service
- your AOAI     Copilot models  your AOAI (BYOM)    + GA Agent Skills (planned)
-                                                   your AOAI
+```mermaid
+flowchart LR
+    S1["Stage 1<br/>Hand-rolled ReAct loop<br/>your AOAI"]
+    S2["Stage 2<br/>Copilot SDK<br/>runtime loop<br/>Copilot models"]
+    S2b["Stage 2b<br/>Copilot SDK (BYOM)<br/>runtime loop<br/>your AOAI"]
+    S3["Stage 3<br/>Agent Framework<br/>owns the loop<br/>+ GA Agent Skills · your AOAI"]
+    S4["Stage 4<br/>Foundry Agent Service<br/>(planned)"]
+
+    S1 -->|you own the loop| S2
+    S2 --> S2b
+    S2b --> S3
+    S3 -->|fully managed| S4
 ```
 
 The two axes this project teaches: **who owns the loop** and **whose model runs
