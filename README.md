@@ -57,23 +57,24 @@ Conceptual parallels:
 
 ## Architecture
 
-```
-User ─▶ web/index.html ──SSE──▶ /api/chat ─▶ engine (selected in the UI)
-                                               │
-   ┌──────────────────┬──────────────────┬─────┴────────────────┐
-   ▼                  ▼                  ▼                        ▼
- handrolled        copilot_sdk      copilot_sdk_byom        agent_framework_skills
- you own the       Copilot runtime  Copilot runtime         Agent Framework owns
- loop (agent.py),  owns the loop,   owns the loop,          the loop; GA Agent
- your Azure OpenAI  Copilot models   your Azure OpenAI       Skills, your Azure OpenAI
-   └──────────────────┴──────────────────┴─────┬────────────────┘
-                                               ▼
-                              the SAME skill tools (skill_tools.py)
-                                               │
-                        ┌────────────────────────┴────────────────────────┐
-                        ▼                                                  ▼
-   skills/web-grounding/SKILL.md + tool.py            skills/rag-search/SKILL.md + tool.py
-   (code-backed, WebIQ web grounding)                 (code-backed, Azure AI Search)
+```mermaid
+flowchart LR
+    User["User"] --> UI["web/index.html"]
+    UI -->|SSE| API["/api/chat"]
+    API --> Engine["engine<br/>(selected in the UI)"]
+
+    Engine --> S1["handrolled<br/>you own the loop (agent.py)<br/>your Azure OpenAI"]
+    Engine --> S2["copilot_sdk<br/>Copilot runtime owns the loop<br/>Copilot models"]
+    Engine --> S2b["copilot_sdk_byom<br/>Copilot runtime owns the loop<br/>your Azure OpenAI (BYOM)"]
+    Engine --> S3["agent_framework_skills<br/>Agent Framework owns the loop<br/>GA Agent Skills · your Azure OpenAI"]
+
+    S1 --> Tools["the SAME skill tools<br/>(skill_tools.py)"]
+    S2 --> Tools
+    S2b --> Tools
+    S3 --> Tools
+
+    Tools --> Web["skills/web-grounding<br/>SKILL.md + tool.py<br/>(code-backed, WebIQ web grounding)"]
+    Tools --> Rag["skills/rag-search<br/>SKILL.md + tool.py<br/>(code-backed, Azure AI Search)"]
 ```
 
 Every engine emits the **same** SSE events (`content`, `tool_call`, `error`,
